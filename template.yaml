@@ -65,7 +65,13 @@ Resources:
                 Action:
                   - s3:PutObject
                   - s3:DeleteObject
+                  - s3:DeleteObjectVersion
                 Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/*"
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}"
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -102,6 +108,22 @@ Resources:
           def handler(event, context):
               try:
                   if event['RequestType'] == 'Delete':
+                      # 删栈时清空 CodeBucket，否则非空桶会导致 DELETE_FAILED。
+                      # best-effort：清空失败也不阻塞栈删除。
+                      try:
+                          b = event.get('ResourceProperties', {}).get('Bucket')
+                          if b:
+                              s3 = boto3.client('s3')
+                              pg = s3.get_paginator('list_object_versions')
+                              for page in pg.paginate(Bucket=b):
+                                  objs = [{'Key': o['Key'], 'VersionId': o['VersionId']}
+                                          for o in page.get('Versions', [])]
+                                  objs += [{'Key': o['Key'], 'VersionId': o['VersionId']}
+                                           for o in page.get('DeleteMarkers', [])]
+                                  if objs:
+                                      s3.delete_objects(Bucket=b, Delete={'Objects': objs})
+                      except Exception:
+                          pass
                       _send(event, context, 'SUCCESS', {})
                       return
                   p = event['ResourceProperties']
