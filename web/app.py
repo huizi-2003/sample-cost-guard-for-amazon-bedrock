@@ -378,11 +378,10 @@ def backfill():
 
 
 # ===== Lambda handler (API Gateway) =====
-try:
-    from mangum import Mangum
-    handler = Mangum(app)
-except ImportError:
-    handler = None
+import awsgi
+
+def handler(event, context):
+    return awsgi.response(app, event, context)
 
 if __name__ == '__main__':
     port = int(os.environ.get('WEB_PORT', '80'))

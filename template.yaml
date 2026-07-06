@@ -164,7 +164,7 @@ Resources:
                   if os.path.exists(req_file):
                       subprocess.check_call(['pip', 'install', '-r', req_file, '-t', tmpdir, '--quiet'])
                   else:
-                      subprocess.check_call(['pip', 'install', 'flask', 'mangum', '-t', tmpdir, '--quiet'])
+                      subprocess.check_call(['pip', 'install', 'flask', 'aws-wsgi', '-t', tmpdir, '--quiet'])
                   # Create web.zip
                   buf2 = io.BytesIO()
                   with zipfile.ZipFile(buf2, 'w', zipfile.ZIP_DEFLATED) as out:
