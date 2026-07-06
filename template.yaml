@@ -158,8 +158,13 @@ Resources:
                           os.makedirs(os.path.dirname(dest), exist_ok=True)
                           with open(dest, 'wb') as f:
                               f.write(src.read(name))
-                  # Install mangum
-                  subprocess.check_call(['pip', 'install', 'mangum', '-t', tmpdir, '--quiet'])
+                  # Install web dependencies from requirements.txt (flask/mangum/boto3),
+                  # 回退到显式安装 flask+mangum，避免缺依赖导致 500。
+                  req_file = os.path.join(tmpdir, 'web', 'requirements.txt')
+                  if os.path.exists(req_file):
+                      subprocess.check_call(['pip', 'install', '-r', req_file, '-t', tmpdir, '--quiet'])
+                  else:
+                      subprocess.check_call(['pip', 'install', 'flask', 'mangum', '-t', tmpdir, '--quiet'])
                   # Create web.zip
                   buf2 = io.BytesIO()
                   with zipfile.ZipFile(buf2, 'w', zipfile.ZIP_DEFLATED) as out:
