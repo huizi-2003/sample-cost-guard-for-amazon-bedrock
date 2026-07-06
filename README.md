@@ -1,4 +1,4 @@
-# Bedrock Lite Guard
+# Bedrock Cost Guard
 
 AWS Bedrock 用量管控工具集：反盗刷监控、每日对账、Web 管理界面。
 
@@ -304,17 +304,27 @@ aws cloudformation delete-stack --stack-name bedrock-cost-guard
 bedrock-cost-guard/
 ├── README.md
 ├── template.yaml          # CloudFormation 模板（自包含：自动建桶 + 拉代码 + 部署）
+├── deploy.sh              # CLI 部署辅助脚本
 ├── common/
+│   ├── __init__.py
 │   ├── config.py          # DynamoDB 读写封装
 │   └── webhook.py         # 通知发送（飞书/钉钉/企微）
 ├── monitor/
+│   ├── __init__.py
 │   └── handler.py         # 反盗刷监控 Lambda
 ├── reconciler/
+│   ├── __init__.py
 │   └── handler.py         # 每日对账 Lambda
-└── web/
-    ├── app.py             # FastAPI 后端
-    ├── requirements.txt
-    └── static/
-        └── index.html     # 管理页面（费用总览 + 历史对账 + 今日监控 + 配置管理）
+├── web/
+│   ├── app.py             # FastAPI 后端
+│   ├── requirements.txt
+│   └── static/
+│       ├── index.html     # 管理页面（费用总览 + 历史对账 + 今日监控 + 配置管理）
+│       └── chart.min.js   # Chart.js 图表库
+├── tests/                 # 单元测试
+│   ├── test_monitor.py
+│   ├── test_reconciler.py
+│   └── test_web_api.py
+└── docs/                  # 设计文档
 ```
 

@@ -1,4 +1,4 @@
-"""Bedrock Lite Guard — 每日对账 Lambda
+"""Bedrock Cost Guard — 每日对账 Lambda
 
 对账逻辑：
   1. 从 Cost Explorer 获取 T-2 完整 UTC 日的 "Amazon Bedrock Service" 账单

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================================
-# Bedrock Lite Guard deploy script.
+# Bedrock Cost Guard deploy script.
 # Packages the code, uploads it to an S3 bucket (auto-created) and deploys the
 # CloudFormation stack (Lambda + DynamoDB + EventBridge + EC2 web console).
 #

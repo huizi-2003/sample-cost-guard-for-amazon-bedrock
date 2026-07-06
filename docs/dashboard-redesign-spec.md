@@ -2,7 +2,7 @@
 
 ## 问题定义
 
-当前 Bedrock Lite Guard 的 Web Dashboard 存在以下不足：
+当前 Bedrock Cost Guard 的 Web Dashboard 存在以下不足：
 
 1. **缺乏总览视角**：进入就是单日对账表格，无法一眼看出费用趋势和整体规模
 2. **无法感知异常**：日费用突增 30% 没有任何视觉提示，需要人肉翻日期对比
