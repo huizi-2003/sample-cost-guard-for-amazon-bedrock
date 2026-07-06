@@ -208,6 +208,9 @@ Resources:
           KeyType: HASH
         - AttributeName: SK
           KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expire_at
+        Enabled: true
 
   # ===== Lambda IAM Role (shared by monitor + reconciler) =====
   LambdaRole:
