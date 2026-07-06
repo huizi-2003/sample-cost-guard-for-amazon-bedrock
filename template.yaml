@@ -19,7 +19,7 @@ Parameters:
     Description: Git branch to pull source code from.
   Version:
     Type: String
-    Default: '1'
+    Default: '3'
     Description: Bump this value (e.g. 1 -> 2) to force re-fetching the latest source code on stack update.
   AllowedCidrs:
     Type: CommaDelimitedList
@@ -437,24 +437,95 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebFunction.Arn}/invocations"
 
+  # ===== Custom Resource: 强制在 AllowedCidrs/Version 变化时重新部署 API =====
+  ApiDeploymentTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ApiGatewayDeployment
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - apigateway:POST
+                  - apigateway:GET
+                Resource: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${WebApi}/deployments*"
+
+  ApiDeploymentTriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-api-deployment-trigger"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ApiDeploymentTriggerRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3, json, urllib.request
+          apigw = boto3.client('apigateway')
+          def send_response(event, context, status, data=None):
+              body = json.dumps({
+                  'Status': status,
+                  'Reason': f"See CloudWatch Log Stream: {context.log_stream_name}",
+                  'PhysicalResourceId': data.get('id') if data else event.get('PhysicalResourceId', context.log_stream_name),
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data or {}
+              })
+              req = urllib.request.Request(event['ResponseURL'], data=body.encode(), method='PUT')
+              urllib.request.urlopen(req)
+          def handler(event, context):
+              print(json.dumps(event))
+              try:
+                  req_type = event['RequestType']
+                  props = event['ResourceProperties']
+                  api_id = props['RestApiId']
+                  stage_name = props['StageName']
+                  description = props.get('Description', 'CloudFormation deployment')
+
+                  if req_type == 'Delete':
+                      send_response(event, context, 'SUCCESS', {'id': event['PhysicalResourceId']})
+                      return
+
+                  # Create/Update 都创建新的 Deployment
+                  resp = apigw.create_deployment(restApiId=api_id, stageName=stage_name, description=description)
+                  deployment_id = resp['id']
+                  print(f"Created deployment {deployment_id} for stage {stage_name}")
+                  send_response(event, context, 'SUCCESS', {'id': deployment_id, 'DeploymentId': deployment_id})
+              except Exception as e:
+                  print(f"Error: {e}")
+                  send_response(event, context, 'FAILED', {'error': str(e)})
+
   WebApiDeployment:
-    Type: AWS::ApiGateway::Deployment
+    Type: AWS::CloudFormation::CustomResource
     DependsOn:
       - WebApiRootMethod
       - WebApiProxyMethod
     Properties:
+      ServiceToken: !GetAtt ApiDeploymentTriggerFunction.Arn
       RestApiId: !Ref WebApi
-      # Description 跟随 AllowedCidrs / Version 变化，触发资源替换 → 自动重新部署，
-      # 让 Resource Policy 变更即时生效到 stage（否则改了 CIDR 也不会 redeploy）
+      StageName: prod
+      # Description 包含 AllowedCidrs + Version，任一变化都触发重新创建
       Description: !Sub
-        - "Deploy for CIDRs [${Cidrs}] v${Version}"
+        - "CIDRs=[${Cidrs}] v${Version}"
         - Cidrs: !Join [',', !Ref AllowedCidrs]
 
   WebApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref WebApi
-      DeploymentId: !Ref WebApiDeployment
+      DeploymentId: !GetAtt WebApiDeployment.DeploymentId
       StageName: prod
 
   WebApiFunctionPermission:

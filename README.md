@@ -264,9 +264,26 @@ aws cloudformation deploy \
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `AllowedCidrs` | 允许访问 Web Console 的 CIDR 列表（逗号分隔） | `127.0.0.1/32`（全部关闭） |
+| `AllowedCidrs` | 允许访问 Web Console 的 CIDR 列表（逗号分隔）<br/>**变更时自动重新部署 API，Resource Policy 即时生效** | `127.0.0.1/32`（全部关闭） |
 | `GitHubOwner` / `GitHubRepo` / `Branch` | 代码来源 | 本仓库 main 分支 |
-| `Version` | 代码版本标记，+1 触发更新 | 1 |
+| `Version` | 代码版本标记，改动即触发重新拉代码 + 重新部署 API | 3 |
+
+> **⚠️ 关于 `Version`（发布代码必读）**
+>
+> `Version` 是由**开发者手动控制**的"发布开关"，用来告诉 CloudFormation 是否需要重新从 GitHub 拉取最新代码：
+>
+> - 模板中拉代码的自定义资源 `CodeObject` **只在 `Version` 变化时才会重新触发**，进而重新下载 GitHub 代码、更新 Lambda。
+> - **改了代码 → 必须改 `Version`**（`git push` 之后部署时把它改成一个新值），否则 CloudFormation 认为没变化，不会重新拉代码，Lambda 仍是旧版本（"部署了但代码没更新"就是这么来的）。
+> - **没改代码**（只调 `AllowedCidrs`、阈值等）→ **保持 `Version` 不变**，部署更快，也不会白拉一遍 GitHub。
+> - 值是多少不重要，只要**和上次不同**就会触发。可以简单递增（`1 → 2 → 3`），也可以直接用发布日期，一眼看出这版代码是哪天发的：
+>
+>   ```bash
+>   --parameter-overrides Version=20260706 AllowedCidrs=1.2.3.4/32
+>   ```
+>
+> 一句话：**改代码就动 `Version`，不改代码就别动它。**
+>
+> **✅ 修复说明（v3）**：`AllowedCidrs` 变更时，模板现在使用 Custom Resource 强制重新部署 API Gateway，确保 Resource Policy 变更立即生效（之前版本只更新 Policy 但不重新部署，导致访问控制不生效）。
 
 ### 部署后
 
