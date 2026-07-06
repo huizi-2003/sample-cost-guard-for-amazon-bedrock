@@ -250,7 +250,7 @@ cd sample-cost-guard-for-amazon-bedrock
 aws cloudformation deploy \
   --template-file template.yaml \
   --stack-name bedrock-cost-guard \
-  --parameter-overrides AllowedCidrs=1.2.3.4/32 \
+  --parameter-overrides AllowedCidrs=1.2.3.4/32 Version=$(date +%s) \
   --capabilities CAPABILITY_IAM
 
 # 查看部署结果（获取 Web Console URL）
@@ -269,7 +269,7 @@ cd sample-cost-guard-for-amazon-bedrock
 aws cloudformation deploy \
   --template-file template.yaml \
   --stack-name bedrock-cost-guard \
-  --parameter-overrides AllowedCidrs=1.2.3.4/32 \
+  --parameter-overrides AllowedCidrs=1.2.3.4/32 Version=$(date +%s) \
   --capabilities CAPABILITY_IAM
 ```
 
@@ -279,7 +279,7 @@ aws cloudformation deploy \
 |------|------|--------|
 | `AllowedCidrs` | 允许访问 Web Console 的 CIDR 列表（逗号分隔）<br/>**变更时自动重新部署 API，Resource Policy 即时生效** | `127.0.0.1/32`（全部关闭） |
 | `GitHubOwner` / `GitHubRepo` / `Branch` | 代码来源 | 本仓库 main 分支 |
-| `Version` | 代码版本标记，改动即触发重新拉代码 + 重新部署 API | 3 |
+| `Version` | 代码版本标记，改动即触发重新拉代码 + 重新部署 API | 1 |
 
 > **⚠️ 关于 `Version`（发布代码必读）**
 >
@@ -306,9 +306,9 @@ aws cloudformation deploy \
 - 阈值
 
 ```bash
-# 更新代码：push 后把 Version +1 重新部署
+# 更新代码：push 后重新部署（Version 用时间戳自动变）
 aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard \
-  --parameter-overrides Version=2 AllowedCidrs=1.2.3.4/32 --capabilities CAPABILITY_IAM
+  --parameter-overrides Version=$(date +%s) AllowedCidrs=1.2.3.4/32 --capabilities CAPABILITY_IAM
 
 # 手动触发对账（不用等定时任务）
 aws lambda invoke --function-name bedrock-cost-guard-reconciler --region us-east-1 /dev/null

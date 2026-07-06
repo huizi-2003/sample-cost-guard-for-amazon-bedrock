@@ -19,8 +19,8 @@ Parameters:
     Description: Git branch to pull source code from.
   Version:
     Type: String
-    Default: '3'
-    Description: Bump this value (e.g. 1 -> 2) to force re-fetching the latest source code on stack update.
+    Default: '1'
+    Description: Change this value on each deploy to trigger code re-fetch (use timestamp e.g. 20260706).
   AllowedCidrs:
     Type: CommaDelimitedList
     Default: 127.0.0.1/32
