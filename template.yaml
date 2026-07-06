@@ -84,12 +84,25 @@ Resources:
       MemorySize: 256
       Code:
         ZipFile: |
-          import urllib.request, boto3, cfnresponse, zipfile, io, subprocess, tempfile, os
+          import urllib.request, boto3, zipfile, io, subprocess, tempfile, os, json
           KEEP = ('common/', 'monitor/', 'reconciler/', 'web/')
+          def _send(event, context, status, data):
+              body = json.dumps({
+                  'Status': status,
+                  'Reason': 'See CloudWatch Log Stream: ' + context.log_stream_name,
+                  'PhysicalResourceId': event.get('PhysicalResourceId') or context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data,
+              }).encode('utf-8')
+              req = urllib.request.Request(event['ResponseURL'], data=body, method='PUT',
+                                           headers={'content-type': '', 'content-length': str(len(body))})
+              urllib.request.urlopen(req, timeout=30)
           def handler(event, context):
               try:
                   if event['RequestType'] == 'Delete':
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      _send(event, context, 'SUCCESS', {})
                       return
                   p = event['ResourceProperties']
                   req = urllib.request.Request(p['SourceUrl'], headers={'User-Agent': 'cfn-bootstrap'})
@@ -136,12 +149,12 @@ Resources:
                   buf2.seek(0)
                   resp2 = s3.put_object(Bucket=p['Bucket'], Key='web.zip', Body=buf2.read())
 
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                  _send(event, context, 'SUCCESS', {
                       'LambdaVersionId': resp1.get('VersionId', 'null'),
                       'WebVersionId': resp2.get('VersionId', 'null'),
                   })
               except Exception as e:
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+                  _send(event, context, 'FAILED', {'Error': str(e)})
 
   CodeObject:
     Type: AWS::CloudFormation::CustomResource
