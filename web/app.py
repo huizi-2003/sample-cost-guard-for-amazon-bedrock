@@ -11,7 +11,9 @@ from botocore.config import Config as BotoConfig
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from flask import Flask, jsonify, request, send_from_directory
+from fastapi import FastAPI, Request, Query
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from common.config import (
     get_thresholds, get_regions, get_reconcile_by_date,
     get_reconcile_dates, put_item, get_item, query_by_pk
@@ -21,25 +23,32 @@ CW_TIMEOUT = BotoConfig(connect_timeout=10, read_timeout=30, retries={'max_attem
 
 RECONCILER_FUNCTION_NAME = os.environ.get('RECONCILER_FUNCTION_NAME', 'bedrock-lite-guard-reconciler')
 
-app = Flask(__name__, static_folder='static')
+app = FastAPI()
+
+# Static files
+STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')
 
 
-@app.route('/')
-def index():
-    return send_from_directory('static', 'index.html')
+@app.get('/')
+async def index():
+    return FileResponse(os.path.join(STATIC_DIR, 'index.html'))
+
+
+@app.get('/static/{file_path:path}')
+async def static_files(file_path: str):
+    full_path = os.path.join(STATIC_DIR, file_path)
+    if os.path.isfile(full_path):
+        return FileResponse(full_path)
+    return JSONResponse({'error': 'Not found'}, status_code=404)
 
 
 # ===== 对账数据 =====
 
-@app.route('/api/reconcile/summary')
-def reconcile_summary():
-    """聚合最近 N 天的对账数据，返回费用总览所需的全部指标"""
-    days = request.args.get('days', 30, type=int)
-    days = max(1, min(365, days))
-
+@app.get('/api/reconcile/summary')
+async def reconcile_summary(days: int = Query(default=30, ge=1, le=365)):
     dates = get_reconcile_dates(limit=days)
     if not dates:
-        return jsonify({'period': {}, 'totals': {}, 'daily_costs': [], 'model_totals': [], 'routing_breakdown': []})
+        return {'period': {}, 'totals': {}, 'daily_costs': [], 'model_totals': [], 'routing_breakdown': []}
 
     daily_costs = []
     model_agg = {}  # {model: total_cost}
@@ -77,7 +86,7 @@ def reconcile_summary():
         pct = cost / total_cost * 100 if total_cost > 0 else 0
         model_totals.append({'model': model, 'cost': round(cost, 4), 'pct': round(pct, 1)})
 
-    # 路由方式拆分：从模型身份中提取 routing 后缀
+    # 路由方式拆分
     routing_agg = {}
     for model, cost in model_agg.items():
         routing = _extract_routing(model)
@@ -87,7 +96,7 @@ def reconcile_summary():
         pct = cost / total_cost * 100 if total_cost > 0 else 0
         routing_breakdown.append({'routing': routing, 'cost': round(cost, 4), 'pct': round(pct, 1)})
 
-    return jsonify({
+    return {
         'period': {
             'start': dates[-1] if dates else '',
             'end': dates[0] if dates else '',
@@ -103,7 +112,7 @@ def reconcile_summary():
         'daily_costs': daily_costs,
         'model_totals': model_totals,
         'routing_breakdown': routing_breakdown,
-    })
+    }
 
 
 def _extract_routing(model_identity):
@@ -117,38 +126,35 @@ def _extract_routing(model_identity):
         return 'direct'
 
 
-@app.route('/api/reconcile/dates')
-def reconcile_dates():
+@app.get('/api/reconcile/dates')
+async def reconcile_dates():
     dates = get_reconcile_dates(limit=30)
-    return jsonify(dates)
+    return dates
 
 
-@app.route('/api/reconcile/<date>')
-def reconcile_detail(date):
+@app.get('/api/reconcile/{date}')
+async def reconcile_detail(date: str):
     data = get_reconcile_by_date(date)
-    return jsonify(data)
+    return data
 
 
 # ===== 监控数据 =====
 
-@app.route('/api/monitor/<date>')
-def monitor_data(date):
-    # 日期格式校验
+@app.get('/api/monitor/{date}')
+async def monitor_data(date: str):
     if not re.match(r'^\d{4}-\d{2}-\d{2}$', date):
-        return jsonify({'error': 'Invalid date format, expected YYYY-MM-DD'}), 400
+        return JSONResponse({'error': 'Invalid date format, expected YYYY-MM-DD'}, status_code=400)
 
     try:
-        parsed = datetime.strptime(date, '%Y-%m-%d')
+        datetime.strptime(date, '%Y-%m-%d')
     except ValueError:
-        return jsonify({'error': 'Invalid date'}), 400
+        return JSONResponse({'error': 'Invalid date'}, status_code=400)
 
-    # 未来日期校验（UTC）
     utc_today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     if date > utc_today:
-        return jsonify({'error': 'Future date not allowed'}), 400
+        return JSONResponse({'error': 'Future date not allowed'}, status_code=400)
 
     items = query_by_pk(f'MONITOR#{date}')
-    # 转换为前端友好格式，按时间排序
     records = []
     for item in items:
         records.append({
@@ -159,7 +165,7 @@ def monitor_data(date):
             'region_count': int(item.get('region_count', 0)),
         })
     records.sort(key=lambda r: r['time'])
-    return jsonify(records)
+    return records
 
 
 # ===== 按模型实时查 CloudWatch =====
@@ -199,22 +205,21 @@ def _fetch_region_models(region, start, end):
     return models
 
 
-@app.route('/api/monitor/<date>/models')
-def monitor_models(date):
+@app.get('/api/monitor/{date}/models')
+async def monitor_models(date: str):
     """返回当日各模型的时间序列。优先从 DDB 读取缓存，无模型数据时 fallback 到实时 CW 查询。"""
     if not re.match(r'^\d{4}-\d{2}-\d{2}$', date):
-        return jsonify({'error': 'Invalid date format'}), 400
+        return JSONResponse({'error': 'Invalid date format'}, status_code=400)
 
     utc_today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     if date > utc_today:
-        return jsonify({'error': 'Future date not allowed'}), 400
+        return JSONResponse({'error': 'Future date not allowed'}, status_code=400)
 
     # 尝试从 DDB 读取（带 models 字段的缓存数据）
     items = query_by_pk(f'MONITOR#{date}')
     has_models = any('models' in item and item['models'] for item in items)
 
     if has_models:
-        # 从 DDB 构建模型时间序列
         all_models = {}  # {model: {time: tokens}}
         for item in items:
             time_str = item['SK'].replace('T#', '')
@@ -226,7 +231,6 @@ def monitor_models(date):
                     all_models[model] = {}
                 all_models[model][time_str] = all_models[model].get(time_str, 0) + int(tokens)
 
-        # 转为前端格式：{model: [{time, tokens}, ...]}（累计值）
         result = {}
         for model, time_map in all_models.items():
             points = sorted(time_map.items(), key=lambda x: x[0])
@@ -236,7 +240,7 @@ def monitor_models(date):
                 cumulative += v
                 series.append({'time': t, 'tokens': cumulative})
             result[model] = series
-        return jsonify(result)
+        return result
 
     # Fallback: 无模型缓存，实时查 CW
     return _fetch_models_from_cw(date)
@@ -254,7 +258,7 @@ def _fetch_models_from_cw(date):
 
     regions = get_regions()
     if not regions:
-        return jsonify({})
+        return {}
 
     all_models = {}
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -280,71 +284,79 @@ def _fetch_models_from_cw(date):
             series.append({'time': t, 'tokens': int(cumulative)})
         result[model] = series
 
-    return jsonify(result)
+    return result
 
 
-@app.route('/api/monitor/<date>/yesterday')
-def monitor_yesterday(date):
+@app.get('/api/monitor/{date}/yesterday')
+async def monitor_yesterday(date: str):
     """返回前一天的模型级监控数据，用于对比线展示。"""
     if not re.match(r'^\d{4}-\d{2}-\d{2}$', date):
-        return jsonify({'error': 'Invalid date format'}), 400
+        return JSONResponse({'error': 'Invalid date format'}, status_code=400)
 
     try:
         parsed = datetime.strptime(date, '%Y-%m-%d')
     except ValueError:
-        return jsonify({'error': 'Invalid date'}), 400
+        return JSONResponse({'error': 'Invalid date'}, status_code=400)
 
     yesterday = (parsed - timedelta(days=1)).strftime('%Y-%m-%d')
     utc_today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     if yesterday > utc_today:
-        return jsonify({})
+        return {}
 
-    # 复用 monitor_models 的逻辑（它内部已经会优先读 DDB）
-    with app.test_request_context(f'/api/monitor/{yesterday}/models'):
-        resp = monitor_models(yesterday)
-        return resp
+    # 复用 monitor_models 的逻辑
+    return await monitor_models(yesterday)
 
 
 # ===== 配置管理 =====
 
-@app.route('/api/config/regions', methods=['GET', 'PUT'])
-def config_regions():
-    if request.method == 'GET':
-        return jsonify(get_regions())
-    regions = request.json.get('regions', [])
+@app.get('/api/config/regions')
+async def get_config_regions():
+    return get_regions()
+
+
+@app.put('/api/config/regions')
+async def put_config_regions(request: Request):
+    body = await request.json()
+    regions = body.get('regions', [])
     put_item('CONFIG', 'regions', value=','.join(regions))
-    return jsonify({'ok': True})
+    return {'ok': True}
 
 
-@app.route('/api/config/thresholds', methods=['GET', 'PUT'])
-def config_thresholds():
-    if request.method == 'GET':
-        return jsonify(get_thresholds())
-    data = request.json
+@app.get('/api/config/thresholds')
+async def get_config_thresholds():
+    return get_thresholds()
+
+
+@app.put('/api/config/thresholds')
+async def put_config_thresholds(request: Request):
+    data = await request.json()
     for key, val in data.items():
         put_item('THRESHOLD', key, value=int(val))
-    return jsonify({'ok': True})
+    return {'ok': True}
 
 
-@app.route('/api/config/webhook', methods=['GET', 'PUT'])
-def config_webhook():
-    if request.method == 'GET':
-        item = get_item('CONFIG', 'webhook')
-        return jsonify(item or {'url': '', 'type': 'feishu'})
-    data = request.json
+@app.get('/api/config/webhook')
+async def get_config_webhook():
+    item = get_item('CONFIG', 'webhook')
+    return item or {'url': '', 'type': 'feishu'}
+
+
+@app.put('/api/config/webhook')
+async def put_config_webhook(request: Request):
+    data = await request.json()
     put_item('CONFIG', 'webhook', url=data.get('url', ''), type=data.get('type', 'feishu'))
-    return jsonify({'ok': True})
+    return {'ok': True}
 
 
 # ===== 回填 =====
 
-@app.route('/api/backfill', methods=['POST'])
-def backfill():
-    data = request.json
+@app.post('/api/backfill')
+async def backfill(request: Request):
+    data = await request.json()
     days = data.get('days', 0)
 
     if not isinstance(days, int) or days < 1 or days > 365:
-        return jsonify({'error': 'days must be between 1 and 365'}), 400
+        return JSONResponse({'error': 'days must be between 1 and 365'}, status_code=400)
 
     lambda_client = boto3.client('lambda')
     now = datetime.now(timezone.utc)
@@ -369,20 +381,20 @@ def backfill():
         if i < days - 1:
             time.sleep(2)  # 避免 CE API 限流
 
-    return jsonify({
+    return {
         'total': days,
         'success_count': len(results['success']),
         'failed_count': len(results['failed']),
         'failed_dates': results['failed'],
-    })
+    }
 
 
 # ===== Lambda handler (API Gateway) =====
-import awsgi
+from mangum import Mangum
 
-def handler(event, context):
-    return awsgi.response(app, event, context)
+handler = Mangum(app)
 
 if __name__ == '__main__':
+    import uvicorn
     port = int(os.environ.get('WEB_PORT', '80'))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    uvicorn.run(app, host='0.0.0.0', port=port)
