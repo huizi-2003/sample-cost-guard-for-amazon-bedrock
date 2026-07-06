@@ -1,0 +1,434 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Bedrock Lite Guard - anti-fraud monitor + daily reconciler + web console (serverless).
+  Self-contained stack: creates S3 bucket, downloads code from GitHub, deploys
+  Lambda functions + DynamoDB + EventBridge + API Gateway. No CLI / no pre-packaging required.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: huizi-2003
+    Description: GitHub repository owner.
+  GitHubRepo:
+    Type: String
+    Default: sample-cost-guard-for-amazon-bedrock
+    Description: GitHub repository name.
+  Branch:
+    Type: String
+    Default: main
+    Description: Git branch to pull source code from.
+  Version:
+    Type: String
+    Default: '1'
+    Description: Bump this value (e.g. 1 -> 2) to force re-fetching the latest source code on stack update.
+  AllowedCidrs:
+    Type: CommaDelimitedList
+    Default: 127.0.0.1/32
+    Description: >
+      Comma-separated CIDRs allowed to access the Web Console
+      (e.g. 1.2.3.4/32,5.6.7.0/24). Default is closed.
+
+Resources:
+  # ===== S3 bucket for Lambda code (auto-created) =====
+  CodeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ===== Bootstrap: download source zip from GitHub into CodeBucket =====
+  CodeFetcherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeFetcherPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+
+  CodeFetcherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-code-fetcher"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CodeFetcherRole.Arn
+      Timeout: 120
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import urllib.request, boto3, cfnresponse, zipfile, io, subprocess, tempfile, os
+          KEEP = ('common/', 'monitor/', 'reconciler/', 'web/')
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                  p = event['ResourceProperties']
+                  req = urllib.request.Request(p['SourceUrl'], headers={'User-Agent': 'cfn-bootstrap'})
+                  raw = urllib.request.urlopen(req, timeout=120).read()
+                  src = zipfile.ZipFile(io.BytesIO(raw))
+
+                  # Build lambda.zip (monitor + reconciler + common)
+                  buf = io.BytesIO()
+                  with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as out:
+                      for name in src.namelist():
+                          if name.endswith('/'):
+                              continue
+                          parts = name.split('/', 1)
+                          inner = parts[1] if len(parts) > 1 else parts[0]
+                          if inner and inner.startswith(('common/', 'monitor/', 'reconciler/')):
+                              out.writestr(inner, src.read(name))
+                  buf.seek(0)
+                  s3 = boto3.client('s3')
+                  resp1 = s3.put_object(Bucket=p['Bucket'], Key='lambda.zip', Body=buf.read())
+
+                  # Build web.zip (web/ + common/ + mangum dependency)
+                  tmpdir = tempfile.mkdtemp()
+                  # Extract web/ and common/ to tmpdir
+                  for name in src.namelist():
+                      if name.endswith('/'):
+                          continue
+                      parts = name.split('/', 1)
+                      inner = parts[1] if len(parts) > 1 else parts[0]
+                      if inner and inner.startswith(('web/', 'common/')):
+                          dest = os.path.join(tmpdir, inner)
+                          os.makedirs(os.path.dirname(dest), exist_ok=True)
+                          with open(dest, 'wb') as f:
+                              f.write(src.read(name))
+                  # Install mangum
+                  subprocess.check_call(['pip', 'install', 'mangum', '-t', tmpdir, '--quiet'])
+                  # Create web.zip
+                  buf2 = io.BytesIO()
+                  with zipfile.ZipFile(buf2, 'w', zipfile.ZIP_DEFLATED) as out:
+                      for root, dirs, files in os.walk(tmpdir):
+                          for f in files:
+                              full = os.path.join(root, f)
+                              arcname = os.path.relpath(full, tmpdir)
+                              out.write(full, arcname)
+                  buf2.seek(0)
+                  resp2 = s3.put_object(Bucket=p['Bucket'], Key='web.zip', Body=buf2.read())
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'LambdaVersionId': resp1.get('VersionId', 'null'),
+                      'WebVersionId': resp2.get('VersionId', 'null'),
+                  })
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  CodeObject:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt CodeFetcherFunction.Arn
+      SourceUrl: !Sub "https://github.com/${GitHubOwner}/${GitHubRepo}/archive/refs/heads/${Branch}.zip"
+      Bucket: !Ref CodeBucket
+      Key: lambda.zip
+      Version: !Ref Version
+
+  # ===== DynamoDB =====
+  ConfigTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: bedrock-lite-guard
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+
+  # ===== Lambda IAM Role (shared by monitor + reconciler) =====
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockLiteGuardLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:ListMetrics
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !GetAtt ConfigTable.Arn
+              - Effect: Allow
+                Action:
+                  - ce:GetCostAndUsage
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+
+  # ===== Lambda: Monitor =====
+  MonitorFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: CodeObject
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-monitor"
+      Runtime: python3.12
+      Handler: monitor/handler.handler
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: lambda.zip
+        S3ObjectVersion: !GetAtt CodeObject.LambdaVersionId
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 180
+      MemorySize: 512
+      Environment:
+        Variables:
+          DDB_TABLE: !Ref ConfigTable
+
+  # ===== Lambda: Reconciler =====
+  ReconcilerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: CodeObject
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-reconciler"
+      Runtime: python3.12
+      Handler: reconciler/handler.handler
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: lambda.zip
+        S3ObjectVersion: !GetAtt CodeObject.LambdaVersionId
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          DDB_TABLE: !Ref ConfigTable
+
+  # ===== Lambda: Web Console =====
+  WebLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockLiteGuardWebPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt ConfigTable.Arn
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:ListMetrics
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-reconciler"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+
+  WebFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: CodeObject
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-web"
+      Runtime: python3.12
+      Handler: web/app.handler
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: web.zip
+        S3ObjectVersion: !GetAtt CodeObject.WebVersionId
+      Role: !GetAtt WebLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          DDB_TABLE: !Ref ConfigTable
+          RECONCILER_FUNCTION_NAME: !Sub "${AWS::StackName}-reconciler"
+
+  # ===== EventBridge Schedules =====
+  MonitorSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-monitor-schedule"
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Id: MonitorLambda
+          Arn: !GetAtt MonitorFunction.Arn
+
+  ReconcilerSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-reconciler-schedule"
+      ScheduleExpression: cron(0 17 * * ? *)
+      State: ENABLED
+      Targets:
+        - Id: ReconcilerLambda
+          Arn: !GetAtt ReconcilerFunction.Arn
+
+  MonitorPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MonitorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MonitorSchedule.Arn
+
+  ReconcilerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ReconcilerFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ReconcilerSchedule.Arn
+
+  # ===== API Gateway (REST API) =====
+  WebApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${AWS::StackName}-web"
+      Description: Bedrock Lite Guard Web Console
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Policy:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: execute-api:Invoke
+            Resource: execute-api:/*
+          - Effect: Deny
+            Principal: '*'
+            Action: execute-api:Invoke
+            Resource: execute-api:/*
+            Condition:
+              NotIpAddress:
+                aws:SourceIp: !Ref AllowedCidrs
+
+  WebApiRootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WebApi
+      ResourceId: !GetAtt WebApi.RootResourceId
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebFunction.Arn}/invocations"
+
+  WebApiProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref WebApi
+      ParentId: !GetAtt WebApi.RootResourceId
+      PathPart: '{proxy+}'
+
+  WebApiProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WebApi
+      ResourceId: !Ref WebApiProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebFunction.Arn}/invocations"
+
+  WebApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - WebApiRootMethod
+      - WebApiProxyMethod
+    Properties:
+      RestApiId: !Ref WebApi
+
+  WebApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref WebApi
+      DeploymentId: !Ref WebApiDeployment
+      StageName: prod
+
+  WebApiFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebApi}/*"
+
+Outputs:
+  MonitorFunctionName:
+    Value: !Ref MonitorFunction
+  ReconcilerFunctionName:
+    Value: !Ref ReconcilerFunction
+  ConfigTableName:
+    Value: !Ref ConfigTable
+  CodeBucketName:
+    Value: !Ref CodeBucket
+  WebConsoleUrl:
+    Value: !Sub "https://${WebApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+    Description: Web Console URL

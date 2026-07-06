@@ -1,0 +1,35 @@
+# ===== macOS =====
+.DS_Store
+._*
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# ===== Testing =====
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+.tox/
+
+# ===== AWS / SAM / build artifacts =====
+lambda.zip
+*.zip
+.aws-sam/
+packaged.yaml
+samconfig.toml
+
+# ===== IDE / Editor =====
+.vscode/
+.idea/
+*.swp
+

@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bedrock Lite Guard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f7fa; color: #333; }
+.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+h1 { margin-bottom: 20px; color: #1a1a2e; }
+.tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid #e0e0e0; }
+.tab { padding: 10px 20px; cursor: pointer; border-radius: 6px 6px 0 0; background: #e8eaf0; }
+.tab.active { background: #fff; border-bottom: 2px solid #fff; margin-bottom: -2px; font-weight: 600; }
+.panel { display: none; background: #fff; border-radius: 8px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.panel.active { display: block; }
+table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; }
+th { background: #f8f9fa; font-weight: 600; }
+tr:hover { background: #f0f4ff; }
+.cost { font-weight: 600; color: #2d6a4f; }
+.model-group td { background: #eef2ff; font-weight: 600; color: #1a1a2e; border-top: 2px solid #d5dcff; }
+.model-group .subtotal { color: #2d6a4f; }
+.token-row td:first-child { padding-left: 28px; color: #555; }
+.token-row .unit-price { color: #4361ee; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.date-nav { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.date-nav select { padding: 6px 12px; border-radius: 4px; border: 1px solid #ccc; }
+.form-group { margin-bottom: 16px; }
+.form-group label { display: block; margin-bottom: 4px; font-weight: 500; }
+.form-group input, .form-group select { padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; width: 300px; }
+.btn { padding: 8px 16px; background: #4361ee; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+.btn:hover { background: #3a56d4; }
+.btn-danger { background: #e63946; }
+.btn-danger:hover { background: #c1121f; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.summary { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+.summary-card { background: #f0f4ff; padding: 16px 24px; border-radius: 8px; flex: 1; min-width: 160px; }
+.summary-card .value { font-size: 24px; font-weight: 700; color: #4361ee; }
+.summary-card .label { font-size: 13px; color: #666; margin-top: 4px; }
+.msg { padding: 8px 12px; margin: 8px 0; border-radius: 4px; background: #d4edda; color: #155724; }
+
+/* Compare bar */
+.compare-bar { background: #f0f1f3; border-radius: 8px; padding: 12px 24px; display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 16px; font-size: 15px; }
+.compare-bar .up { color: #e63946; font-weight: 600; }
+.compare-bar .down { color: #2d6a4f; font-weight: 600; }
+
+/* Chart row - two columns */
+.chart-row { display: flex; gap: 24px; margin-top: 24px; }
+.chart-row > div { flex: 1; min-width: 0; position: relative; }
+
+/* Alert bar */
+.alert-bar { background: #e63946; color: #fff; padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-weight: 500; display: none; }
+.alert-bar.visible { display: block; }
+
+/* Overview summary cards */
+.overview-cards { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+.overview-cards .card { background: #fff; border: 1px solid #e8eaf0; padding: 20px 24px; border-radius: 10px; flex: 1; min-width: 180px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+.overview-cards .card .value { font-size: 28px; font-weight: 700; color: #1a1a2e; }
+.overview-cards .card .label { font-size: 13px; color: #888; margin-top: 6px; }
+.overview-cards .card .change-up { color: #e63946; font-size: 14px; font-weight: 600; }
+.overview-cards .card .change-down { color: #2d6a4f; font-size: 14px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Bedrock Lite Guard</h1>
+<div class="tabs">
+  <div class="tab active" data-panel="overview">费用总览</div>
+  <div class="tab" data-panel="reconcile">历史对账</div>
+  <div class="tab" data-panel="monitor">今日监控</div>
+  <div class="tab" data-panel="config">配置管理</div>
+</div>
+
+<!-- Tab 1: 费用总览 -->
+<div id="overview" class="panel active">
+  <div class="overview-cards" id="overview-cards">
+    <div class="card"><div class="value" id="ov-month-cost">-</div><div class="label" id="ov-month-label">累计费用</div></div>
+    <div class="card"><div class="value" id="ov-yesterday-cost">-</div><div class="label">最近日费用</div></div>
+    <div class="card"><div class="value" id="ov-avg-cost">-</div><div class="label">日均费用</div></div>
+    <div class="card"><div class="value" id="ov-change">-</div><div class="label">日环比变化</div></div>
+  </div>
+  <div style="position:relative; height:320px; margin-bottom:24px;">
+    <canvas id="overview-trend-chart"></canvas>
+  </div>
+  <div style="position:relative; height:280px;">
+    <canvas id="overview-bar-chart"></canvas>
+  </div>
+  <div style="margin-top:16px; font-size:12px; color:#999;">* 费用数据基于 Cost Explorer（UTC 日），账单通常 T+1~T+1.5 天结算完成</div>
+</div>
+
+<!-- Tab 2: 历史对账 -->
+<div id="reconcile" class="panel">
+  <div class="compare-bar" id="reconcile-compare" style="display:none;"></div>
+  <div class="date-nav">
+    <label>日期：</label>
+    <select id="date-select"></select>
+  </div>
+  <div class="summary" id="summary"></div>
+  <table>
+    <thead><tr><th>模型 / Token 类型</th><th>Token 数量</th><th>费用</th><th>换算单价 ($/1M)</th></tr></thead>
+    <tbody id="reconcile-body"></tbody>
+  </table>
+
+  <h3 style="margin-top:24px;cursor:pointer" onclick="toggleDetail('ce-detail')">▶ 账单明细（Cost Explorer USAGE_TYPE）</h3>
+  <div id="ce-detail" style="display:none;margin-top:8px">
+    <table>
+      <thead><tr><th>用量类型</th><th>费用</th><th>用量</th><th>单位</th></tr></thead>
+      <tbody id="ce-detail-body"></tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:24px;cursor:pointer" onclick="toggleDetail('cw-detail')">▶ 监控明细（CloudWatch 各 Region）</h3>
+  <div id="cw-detail" style="display:none;margin-top:8px">
+    <table>
+      <thead><tr><th>Region</th><th>Token 总量</th></tr></thead>
+      <tbody id="cw-detail-body"></tbody>
+    </table>
+  </div>
+
+  <!-- 回填区域 -->
+  <div style="margin-top: 20px; padding: 16px; border: 1px solid #e0e0e0; border-radius: 8px;">
+    <h4>历史数据回填</h4>
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <label>回填天数：</label>
+      <input type="number" id="backfill-days" min="1" max="365" value="30" style="width: 80px; padding: 4px 8px;">
+      <button id="btn-backfill" class="btn" onclick="startBackfill()">回填</button>
+    </div>
+    <div id="backfill-progress" style="margin-top: 12px; display: none;">
+      <div id="backfill-status"></div>
+      <div id="backfill-result" style="margin-top: 8px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Tab 3: 今日监控 -->
+<div id="monitor" class="panel">
+  <div id="monitor-alert" class="alert-bar"></div>
+  <div style="font-size:12px; color:#999; margin-bottom:8px;">时间轴为 UTC，数据每 5 分钟更新</div>
+  <div id="monitor-empty" style="display:none; text-align:center; padding:60px; color:#888;">
+    暂无数据，监控数据每 5 分钟更新
+  </div>
+  <div id="monitor-chart-container" style="display:none; position:relative; height:420px;">
+    <canvas id="monitor-chart"></canvas>
+  </div>
+  <div id="monitor-error" style="display:none; text-align:center; color:#d32f2f;"></div>
+</div>
+
+<!-- Tab 4: 配置管理 -->
+<div id="config" class="panel">
+  <h3>提醒阈值</h3>
+  <div style="display:flex;gap:16px;margin:12px 0">
+    <div class="form-group"><label>5 分钟</label><input id="th-5min" type="number"></div>
+    <div class="form-group"><label>15 分钟</label><input id="th-15min" type="number"></div>
+    <div class="form-group"><label>每日</label><input id="th-daily" type="number"></div>
+  </div>
+  <button class="btn" onclick="saveThresholds()">保存阈值</button>
+  <div id="th-msg"></div>
+
+  <h3 style="margin-top:24px">监控 Region</h3>
+  <div class="form-group">
+    <textarea id="regions-input" rows="3" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px" placeholder="us-east-1, us-west-2, ..."></textarea>
+  </div>
+  <button class="btn" onclick="saveRegions()">保存 Region</button>
+  <div id="regions-msg"></div>
+
+  <h3 style="margin-top:24px">Webhook 通知</h3>
+  <div style="display:flex;gap:12px;margin:12px 0">
+    <div class="form-group"><label>URL</label><input id="wh-url" style="width:400px"></div>
+    <div class="form-group"><label>渠道</label>
+      <select id="wh-type"><option value="feishu">飞书</option><option value="dingtalk">钉钉</option><option value="wecom">企业微信</option></select>
+    </div>
+  </div>
+  <button class="btn" onclick="saveWebhook()">保存 Webhook</button>
+  <div id="wh-msg"></div>
+</div>
+</div>
+
+<script src="/static/chart.min.js"></script>
+<script>
+const API = '';
+const COLORS = [
+  'rgba(67,97,238,0.7)', 'rgba(230,57,70,0.7)', 'rgba(42,157,143,0.7)',
+  'rgba(233,196,106,0.7)', 'rgba(244,162,97,0.7)', 'rgba(38,70,83,0.7)',
+  'rgba(114,9,183,0.7)', 'rgba(6,214,160,0.7)', 'rgba(251,86,7,0.7)', 'rgba(58,134,255,0.7)'
+];
+
+// ===== Tabs =====
+let monitorRefreshTimer = null;
+let monitorChart = null;
+let overviewTrendChart = null;
+let overviewBarChart = null;
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.panel).classList.add('active');
+
+    if (tab.dataset.panel === 'monitor') {
+      loadMonitorChart();
+      monitorRefreshTimer = setInterval(loadMonitorChart, 5 * 60 * 1000);
+    } else {
+      if (monitorRefreshTimer) { clearInterval(monitorRefreshTimer); monitorRefreshTimer = null; }
+    }
+  };
+});
+
+// ===== Toggle detail sections =====
+function toggleDetail(id) {
+  const el = document.getElementById(id);
+  const header = el.previousElementSibling;
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    header.textContent = header.textContent.replace('▶', '▼');
+  } else {
+    el.style.display = 'none';
+    header.textContent = header.textContent.replace('▼', '▶');
+  }
+}
+
+// ===== Tab 1: 费用总览 =====
+async function loadOverview() {
+  try {
+    const resp = await fetch(`${API}/api/reconcile/summary?days=7`);
+    const data = await resp.json();
+    renderOverview(data);
+  } catch (e) {
+    console.error('Overview load failed:', e);
+  }
+}
+
+function renderOverview(data) {
+  const days = data.daily_costs || [];
+  const validDays = days.filter(d => d.cost > 0);
+
+  if (validDays.length === 0) {
+    document.getElementById('ov-month-cost').textContent = '$0.00';
+    document.getElementById('ov-month-label').textContent = '近 7 天累计';
+    document.getElementById('ov-yesterday-cost').textContent = '$0.00';
+    document.getElementById('ov-avg-cost').textContent = '$0.00';
+    document.getElementById('ov-change').textContent = '-';
+    return;
+  }
+
+  // Summary cards — 全部基于 validDays
+  const total = validDays.reduce((s, d) => s + d.cost, 0);
+  const latestDay = validDays[validDays.length - 1];
+  const prevDay = validDays.length >= 2 ? validDays[validDays.length - 2] : null;
+  const yesterday = latestDay.cost;
+  const dayBefore = prevDay ? prevDay.cost : 0;
+  const avgCost = total / validDays.length;
+  const changePct = dayBefore > 0 ? ((yesterday - dayBefore) / dayBefore * 100) : 0;
+
+  document.getElementById('ov-month-cost').textContent = '$' + total.toFixed(2);
+  document.getElementById('ov-month-label').textContent = '近 7 天累计';
+  document.getElementById('ov-yesterday-cost').textContent = '$' + yesterday.toFixed(2);
+  document.getElementById('ov-avg-cost').textContent = '$' + avgCost.toFixed(2);
+
+  const changeEl = document.getElementById('ov-change');
+  const changeLabel = prevDay ? `${prevDay.date.slice(5)} → ${latestDay.date.slice(5)}` : '日环比变化';
+  changeEl.closest('.card').querySelector('.label').textContent = changeLabel;
+  if (dayBefore === 0) {
+    changeEl.textContent = '-';
+    changeEl.className = 'value';
+  } else if (changePct >= 0) {
+    changeEl.innerHTML = `<span class="change-up">▲ ${changePct.toFixed(1)}%</span>`;
+  } else {
+    changeEl.innerHTML = `<span class="change-down">▼ ${Math.abs(changePct).toFixed(1)}%</span>`;
+  }
+
+  // Collect model data across all days
+  const modelTotals = {};
+  days.forEach(d => {
+    if (d.models) {
+      Object.entries(d.models).forEach(([model, cost]) => {
+        modelTotals[model] = (modelTotals[model] || 0) + cost;
+      });
+    }
+  });
+
+  // Top 5 models + others
+  const sorted = Object.entries(modelTotals).sort((a, b) => b[1] - a[1]);
+  const top5 = sorted.slice(0, 5);
+  const othersTotal = sorted.slice(5).reduce((s, e) => s + e[1], 0);
+
+  // Trend chart: stacked area by top 5 models (exclude $0 days)
+  const trendLabels = validDays.map(d => d.date);
+  const trendDatasets = top5.map(([model], i) => ({
+    label: shortenModelName(model),
+    data: validDays.map(d => (d.models && d.models[model]) || 0),
+    backgroundColor: COLORS[i],
+    borderColor: COLORS[i].replace('0.7', '1'),
+    borderWidth: 1,
+    fill: true,
+    pointRadius: 0,
+  }));
+  if (othersTotal > 0) {
+    const otherModels = sorted.slice(5).map(e => e[0]);
+    trendDatasets.push({
+      label: '其他',
+      data: validDays.map(d => {
+        let sum = 0;
+        otherModels.forEach(m => { sum += (d.models && d.models[m]) || 0; });
+        return sum;
+      }),
+      backgroundColor: 'rgba(180,180,180,0.5)',
+      borderColor: 'rgba(150,150,150,0.8)',
+      borderWidth: 1,
+      fill: true,
+      pointRadius: 0,
+    });
+  }
+
+  if (overviewTrendChart) { overviewTrendChart.destroy(); }
+  overviewTrendChart = new Chart(document.getElementById('overview-trend-chart'), {
+    type: 'line',
+    data: { labels: trendLabels, datasets: trendDatasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: true, position: 'bottom', labels: { boxWidth: 12, padding: 12 } },
+        title: { display: true, text: '近 7 天日费用趋势', font: { size: 15 }, color: '#1a1a2e' },
+        tooltip: { callbacks: { label: (item) => item.dataset.label + ': $' + item.parsed.y.toFixed(2) } },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, color: '#888' } },
+        y: { stacked: true, beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { color: '#888', callback: v => '$' + v.toFixed(0) } },
+      },
+    },
+  });
+
+  // Horizontal bar chart - Top 5
+  if (overviewBarChart) { overviewBarChart.destroy(); }
+  overviewBarChart = new Chart(document.getElementById('overview-bar-chart'), {
+    type: 'bar',
+    data: {
+      labels: top5.map(e => shortenModelName(e[0])),
+      datasets: [{ data: top5.map(e => e[1]), backgroundColor: COLORS.slice(0, 5), borderWidth: 0 }],
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        title: { display: true, text: 'Top 5 模型费用排名', font: { size: 14 }, color: '#1a1a2e' },
+        tooltip: { callbacks: { label: (item) => '$' + item.raw.toFixed(2) } },
+      },
+      scales: {
+        x: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { callback: v => '$' + v.toFixed(0) } },
+        y: { grid: { display: false }, ticks: { font: { size: 11 } } },
+      },
+    },
+  });
+}
+
+// ===== Tab 2: 历史对账 =====
+async function loadDates() {
+  const dates = await (await fetch(`${API}/api/reconcile/dates`)).json();
+  const sel = document.getElementById('date-select');
+  sel.innerHTML = dates.map(d => `<option value="${d}">${d}</option>`).join('');
+  if (dates.length) loadReconcile(dates[0]);
+  sel.onchange = () => loadReconcile(sel.value);
+  loadReconcileCompare();
+}
+
+async function loadReconcileCompare() {
+  try {
+    const resp = await fetch(`${API}/api/reconcile/summary?days=2`);
+    const data = await resp.json();
+    const days = data.daily_costs || [];
+    const bar = document.getElementById('reconcile-compare');
+    if (days.length >= 2) {
+      const yesterday = days[days.length - 1].cost || 0;
+      const dayBefore = days[days.length - 2].cost || 0;
+      const pct = dayBefore > 0 ? ((yesterday - dayBefore) / dayBefore * 100) : 0;
+      const arrow = pct >= 0 ? '▲' : '▼';
+      const cls = pct >= 0 ? 'up' : 'down';
+      bar.innerHTML = `昨日 <strong>$${yesterday.toFixed(2)}</strong> → 前日 <strong>$${dayBefore.toFixed(2)}</strong> (<span class="${cls}">${arrow} ${Math.abs(pct).toFixed(1)}%</span>)`;
+      bar.style.display = 'flex';
+    } else {
+      bar.style.display = 'none';
+    }
+  } catch (e) {
+    document.getElementById('reconcile-compare').style.display = 'none';
+  }
+}
+
+async function loadReconcile(date) {
+  const data = await (await fetch(`${API}/api/reconcile/${date}`)).json();
+  const summary = data['_summary'] || {};
+  let summaryHtml = `
+    <div class="summary-card"><div class="value">$${parseFloat(summary.total_actual||0).toFixed(2)}</div><div class="label">实际总费用</div></div>
+    <div class="summary-card"><div class="value">${summary.model_count||0}</div><div class="label">模型数</div></div>
+  `;
+  if (summary.ce_token_total) {
+    summaryHtml += `<div class="summary-card"><div class="value">${parseInt(summary.ce_token_total||0).toLocaleString()}</div><div class="label">CE Token 总量</div></div>`;
+    summaryHtml += `<div class="summary-card"><div class="value">${parseInt(summary.cw_token_total||0).toLocaleString()}</div><div class="label">CW Token 总量</div></div>`;
+    const diffPct = summary.reconcile_diff_pct ? parseFloat(summary.reconcile_diff_pct).toFixed(2) + '%' : '-';
+    summaryHtml += `<div class="summary-card"><div class="value">${diffPct}</div><div class="label">对账差异</div></div>`;
+  }
+  document.getElementById('summary').innerHTML = summaryHtml;
+  const models = Object.entries(data).filter(([k]) => !k.startsWith('_')).sort((a,b) => parseFloat(b[1].actual_cost||0) - parseFloat(a[1].actual_cost||0));
+
+  const TOKEN_ROWS = [
+    {label: '输入',         tokensField: 'tokens_input_1k',          costField: 'cost_input'},
+    {label: '输出',         tokensField: 'tokens_output_1k',         costField: 'cost_output'},
+    {label: '缓存读取',     tokensField: 'tokens_cache_read_1k',     costField: 'cost_cache_read'},
+    {label: '缓存写入(5m)', tokensField: 'tokens_cache_write_1k',    costField: 'cost_cache_write'},
+    {label: '缓存写入(1h)', tokensField: 'tokens_cache_write_1h_1k', costField: 'cost_cache_write_1h'},
+  ];
+  const rows = [];
+  for (const [model, d] of models) {
+    const actual = parseFloat(d.actual_cost || 0);
+    rows.push(`<tr class="model-group"><td>${model}</td><td></td><td class="num subtotal">$${actual.toFixed(4)}</td><td></td></tr>`);
+    for (const r of TOKEN_ROWS) {
+      const tokens1k = parseFloat(d[r.tokensField] || 0);
+      if (tokens1k <= 0) continue;
+      const rawTokens = tokens1k * 1000;
+      const cost = parseFloat(d[r.costField] || 0);
+      const unitPrice = (cost / rawTokens) * 1e6;
+      rows.push(`<tr class="token-row"><td>${r.label}</td><td class="num">${rawTokens.toLocaleString()}</td><td class="num">$${cost.toFixed(4)}</td><td class="num unit-price">$${unitPrice.toFixed(3)}</td></tr>`);
+    }
+  }
+  document.getElementById('reconcile-body').innerHTML = rows.join('') || '<tr><td colspan="4">暂无数据</td></tr>';
+
+  // CE detail
+  const ceDetail = data['_ce_detail'];
+  if (ceDetail && ceDetail.data) {
+    const items = JSON.parse(ceDetail.data);
+    document.getElementById('ce-detail-body').innerHTML = items.map(item =>
+      `<tr><td>${item.usage_type}</td><td>$${parseFloat(item.cost).toFixed(6)}</td><td>${parseFloat(item.quantity).toLocaleString()}</td><td>${item.unit}</td></tr>`
+    ).join('');
+  } else {
+    document.getElementById('ce-detail-body').innerHTML = '<tr><td colspan="4">暂无数据（需重新运行 reconciler 生成）</td></tr>';
+  }
+
+  // CW detail
+  const cwDetail = data['_cw_detail'];
+  if (cwDetail && cwDetail.data) {
+    const regions = JSON.parse(cwDetail.data);
+    document.getElementById('cw-detail-body').innerHTML = Object.entries(regions)
+      .filter(([k]) => k !== '_failed')
+      .sort((a,b) => parseInt(b[1]) - parseInt(a[1]))
+      .map(([region, count]) => `<tr><td>${region}</td><td>${parseInt(count).toLocaleString()}</td></tr>`)
+      .join('');
+    if (regions._failed) {
+      document.getElementById('cw-detail-body').innerHTML += `<tr><td colspan="2" style="color:#e63946">查询失败: ${regions._failed}</td></tr>`;
+    }
+  } else {
+    document.getElementById('cw-detail-body').innerHTML = '<tr><td colspan="2">暂无数据（需重新运行 reconciler 生成）</td></tr>';
+  }
+}
+
+// ===== Config =====
+async function loadThresholds() {
+  const data = await (await fetch(`${API}/api/config/thresholds`)).json();
+  document.getElementById('th-5min').value = data['5min'] || '';
+  document.getElementById('th-15min').value = data['15min'] || '';
+  document.getElementById('th-daily').value = data['daily'] || '';
+}
+
+async function saveThresholds() {
+  await fetch(`${API}/api/config/thresholds`, {method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({'5min': +document.getElementById('th-5min').value, '15min': +document.getElementById('th-15min').value, 'daily': +document.getElementById('th-daily').value})});
+  document.getElementById('th-msg').innerHTML = '<div class="msg">已保存</div>';
+  setTimeout(() => document.getElementById('th-msg').innerHTML = '', 2000);
+}
+
+async function loadRegions() {
+  const data = await (await fetch(`${API}/api/config/regions`)).json();
+  document.getElementById('regions-input').value = data.join(', ');
+}
+
+async function saveRegions() {
+  const regions = document.getElementById('regions-input').value.split(/[,\n]/).map(r => r.trim()).filter(Boolean);
+  await fetch(`${API}/api/config/regions`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({regions})});
+  document.getElementById('regions-msg').innerHTML = '<div class="msg">已保存</div>';
+  setTimeout(() => document.getElementById('regions-msg').innerHTML = '', 2000);
+}
+
+async function loadWebhook() {
+  const data = await (await fetch(`${API}/api/config/webhook`)).json();
+  document.getElementById('wh-url').value = data.url || '';
+  document.getElementById('wh-type').value = data.type || 'feishu';
+}
+
+async function saveWebhook() {
+  await fetch(`${API}/api/config/webhook`, {method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({url: document.getElementById('wh-url').value, type: document.getElementById('wh-type').value})});
+  document.getElementById('wh-msg').innerHTML = '<div class="msg">已保存</div>';
+  setTimeout(() => document.getElementById('wh-msg').innerHTML = '', 2000);
+}
+
+// ===== Backfill =====
+async function startBackfill() {
+  const days = parseInt(document.getElementById('backfill-days').value);
+  if (isNaN(days) || days < 1 || days > 365) { alert('天数必须在 1-365 之间'); return; }
+
+  const btn = document.getElementById('btn-backfill');
+  const progress = document.getElementById('backfill-progress');
+  const status = document.getElementById('backfill-status');
+  const result = document.getElementById('backfill-result');
+
+  btn.disabled = true;
+  progress.style.display = 'block';
+  status.textContent = `正在回填 ${days} 天数据，预计需要 ${Math.ceil(days * 4 / 60)} 分钟，请勿关闭页面...`;
+  result.textContent = '';
+
+  try {
+    const resp = await fetch('/api/backfill', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({days}) });
+    const data = await resp.json();
+    if (resp.ok) {
+      status.textContent = '回填完成';
+      result.innerHTML = `成功: ${data.success_count} 天, 失败: ${data.failed_count} 天` +
+        (data.failed_dates && data.failed_dates.length > 0 ? '<br>失败日期: ' + data.failed_dates.map(f => f.date).join(', ') : '');
+    } else {
+      status.textContent = '回填失败';
+      result.textContent = data.error || '未知错误';
+    }
+  } catch (e) {
+    status.textContent = '回填请求失败';
+    result.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ===== Tab 3: 今日监控 =====
+async function loadMonitorChart() {
+  const today = new Date();
+  const utcDate = today.toISOString().slice(0, 10);
+
+  try {
+    // Fetch today and yesterday in parallel
+    const [todayResp, yesterdayResp] = await Promise.all([
+      fetch(`/api/monitor/${utcDate}/models`),
+      fetch(`/api/monitor/${utcDate}/yesterday`),
+    ]);
+    const todayData = await todayResp.json();
+    let yesterdayData = null;
+    if (yesterdayResp.ok) {
+      yesterdayData = await yesterdayResp.json();
+    }
+
+    const modelNames = Object.keys(todayData);
+    if (modelNames.length === 0) {
+      document.getElementById('monitor-empty').style.display = 'block';
+      document.getElementById('monitor-chart-container').style.display = 'none';
+      document.getElementById('monitor-error').style.display = 'none';
+      document.getElementById('monitor-alert').classList.remove('visible');
+      return;
+    }
+
+    document.getElementById('monitor-empty').style.display = 'none';
+    document.getElementById('monitor-chart-container').style.display = 'block';
+    document.getElementById('monitor-error').style.display = 'none';
+
+    // Check alert condition
+    checkMonitorAlert(todayData, yesterdayData);
+
+    renderModelChart(todayData, yesterdayData);
+  } catch (e) {
+    document.getElementById('monitor-error').style.display = 'block';
+    document.getElementById('monitor-error').textContent = '数据加载失败：' + e.message;
+  }
+}
+
+function checkMonitorAlert(todayData, yesterdayData) {
+  const alertEl = document.getElementById('monitor-alert');
+  if (!yesterdayData) { alertEl.classList.remove('visible'); return; }
+
+  // Get today's cumulative total at last time point
+  let todayTotal = 0;
+  const allTodayTimes = new Set();
+  Object.values(todayData).forEach(series => series.forEach(p => allTodayTimes.add(p.time)));
+  const todayLabels = [...allTodayTimes].sort();
+  const lastTodayTime = todayLabels[todayLabels.length - 1];
+
+  if (!lastTodayTime) { alertEl.classList.remove('visible'); return; }
+
+  Object.values(todayData).forEach(series => {
+    const last = series.filter(p => p.time <= lastTodayTime).pop();
+    if (last) todayTotal += last.tokens;
+  });
+
+  // Get yesterday's cumulative total at same time point
+  let yesterdayAtSameTime = 0;
+  Object.values(yesterdayData).forEach(series => {
+    const matching = series.filter(p => p.time <= lastTodayTime).pop();
+    if (matching) yesterdayAtSameTime += matching.tokens;
+  });
+
+  if (yesterdayAtSameTime > 0 && todayTotal > yesterdayAtSameTime * 1.5) {
+    alertEl.textContent = '⚠ 当前用量超昨日同期 50% 以上';
+    alertEl.classList.add('visible');
+  } else {
+    alertEl.classList.remove('visible');
+  }
+}
+
+function shortenModelName(name) {
+  name = name.replace(/^(us\.|global\.)/, '');
+  name = name.replace(/-\d{8}-v\d+:\d+$/, '');
+  name = name.replace(/-v\d+$/, '');
+  // 缩短 reconciler 生成的模型身份名
+  name = name.replace('anthropic.claude-opus-4-8-mantle-global', 'Opus 4.8 (mantle-global)');
+  name = name.replace('anthropic.claude-opus-4-8-mantle', 'Opus 4.8 (mantle)');
+  name = name.replace('claude4.6opus-cross-region-global', 'Opus 4.6 (cross-region)');
+  name = name.replace('claude4.6opus', 'Opus 4.6 (direct)');
+  name = name.replace('claude4.6sonnet-cross-region-global', 'Sonnet 4.6 (cross-region)');
+  name = name.replace('claude4.6sonnet', 'Sonnet 4.6 (direct)');
+  name = name.replace('claude4sonnet', 'Sonnet 4');
+  name = name.replace('claude4.5haiku', 'Haiku 4.5');
+  name = name.replace('claude4.5sonnet', 'Sonnet 4.5');
+  return name;
+}
+
+function renderModelChart(data, yesterdayData) {
+  const canvas = document.getElementById('monitor-chart');
+
+  // Sort by total, take top 6, merge rest
+  const modelTotals = Object.entries(data).map(([model, series]) => {
+    const last = series.length > 0 ? series[series.length - 1].tokens : 0;
+    return { model, total: last, series };
+  }).sort((a, b) => b.total - a.total);
+
+  const topModels = modelTotals.slice(0, 6);
+  const otherModels = modelTotals.slice(6);
+
+  // Collect all time points
+  const allTimes = new Set();
+  modelTotals.forEach(m => m.series.forEach(p => allTimes.add(p.time)));
+  const labels = [...allTimes].sort();
+
+  // Convert cumulative to deltas
+  function toDeltas(series) {
+    const timeMap = {};
+    series.forEach(p => { timeMap[p.time] = p.tokens; });
+    let prev = 0;
+    return labels.map(t => {
+      const cur = timeMap[t] !== undefined ? timeMap[t] : prev;
+      const delta = cur - prev;
+      prev = cur;
+      return delta > 0 ? delta : 0;
+    });
+  }
+
+  const datasets = topModels.map((m, i) => ({
+    label: shortenModelName(m.model),
+    data: toDeltas(m.series),
+    backgroundColor: COLORS[i % COLORS.length],
+    borderColor: COLORS[i % COLORS.length].replace('0.7', '1'),
+    borderWidth: 1,
+    fill: true,
+    pointRadius: 0,
+  }));
+
+  if (otherModels.length > 0) {
+    const otherDeltas = labels.map(() => 0);
+    otherModels.forEach(m => {
+      const deltas = toDeltas(m.series);
+      deltas.forEach((d, i) => { otherDeltas[i] += d; });
+    });
+    datasets.push({
+      label: '其他',
+      data: otherDeltas,
+      backgroundColor: 'rgba(180,180,180,0.5)',
+      borderColor: 'rgba(150,150,150,0.8)',
+      borderWidth: 1,
+      fill: true,
+      pointRadius: 0,
+    });
+  }
+
+  // Yesterday total as dashed line
+  if (yesterdayData && Object.keys(yesterdayData).length > 0) {
+    // Aggregate yesterday all models by time → cumulative total → convert to deltas aligned to today's labels
+    const ydayTimeMap = {};
+    Object.values(yesterdayData).forEach(series => {
+      series.forEach(p => {
+        ydayTimeMap[p.time] = (ydayTimeMap[p.time] || 0) + p.tokens;
+      });
+    });
+    // We need cumulative at each time for yesterday, then convert to deltas using today's labels
+    const ydayTimes = Object.keys(ydayTimeMap).sort();
+    // Build cumulative lookup: at each time, what's the total cumulative
+    // Actually the tokens in each series point is already cumulative per model, so sum across models gives cumulative total
+    // Convert to deltas on today's label grid
+    let prevYday = 0;
+    const ydayDeltas = labels.map(t => {
+      const cur = ydayTimeMap[t] !== undefined ? ydayTimeMap[t] : prevYday;
+      const delta = cur - prevYday;
+      prevYday = cur;
+      return delta > 0 ? delta : 0;
+    });
+
+    datasets.push({
+      label: '昨日总量',
+      data: ydayDeltas,
+      borderColor: 'rgba(150,150,150,0.8)',
+      borderWidth: 2,
+      borderDash: [5, 5],
+      backgroundColor: 'transparent',
+      fill: false,
+      pointRadius: 0,
+      stack: 'yesterday',
+    });
+  }
+
+  const cfg = {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: true, position: 'bottom', labels: { boxWidth: 12, padding: 16 } },
+        title: { display: true, text: '当日 Token 消耗速率（每小时·按模型）', font: { size: 15 }, color: '#1a1a2e', padding: { bottom: 16 } },
+        tooltip: {
+          callbacks: {
+            label: (item) => item.dataset.label + ': ' + item.parsed.y.toLocaleString() + ' tokens',
+            footer: (items) => '合计: ' + items.filter(i => i.dataset.label !== '昨日总量').reduce((s, i) => s + i.parsed.y, 0).toLocaleString() + ' tokens',
+          },
+        },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#888', maxTicksLimit: 12, autoSkip: true } },
+        y: { stacked: true, beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { color: '#888', callback: (v) => formatTokenCount(v) } },
+      },
+    },
+  };
+
+  if (monitorChart) { monitorChart.destroy(); monitorChart = null; }
+  monitorChart = new Chart(canvas, cfg);
+}
+
+function formatTokenCount(val) {
+  if (val >= 1e9) return (val / 1e9).toFixed(1) + 'B';
+  if (val >= 1e6) return (val / 1e6).toFixed(1) + 'M';
+  if (val >= 1e3) return (val / 1e3).toFixed(1) + 'K';
+  return Math.round(val).toString();
+}
+
+// ===== Init =====
+loadOverview();
+loadDates();
+loadThresholds();
+loadRegions();
+loadWebhook();
+</script>
+</body>
+</html>
