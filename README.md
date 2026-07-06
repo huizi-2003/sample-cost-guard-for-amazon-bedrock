@@ -210,7 +210,21 @@ diff_pct = (actual - estimated) / estimated × 100
 
 整个栈是**自包含**的：CloudFormation 自动创建 S3 桶、从 GitHub 拉取代码、部署所有资源。**无需手动打包代码。**
 
-### 方式一：CloudShell（推荐）
+> **关于"一键 Launch Stack 按钮"**：AWS CloudFormation 的 `templateURL` 只接受 S3 地址，不接受 GitHub raw URL（实测报错 `TemplateURL must be a supported URL`）。因此在不使用 S3 托管模板的前提下，无法提供"点一下就建栈"的按钮。下面的**方式一（控制台上传）**是无需 S3、无需 CLI 的最快替代方案，代码仍从 GitHub 拉取。
+
+### 方式一：CloudFormation 控制台上传（最快，无需 CLI / 无需 S3）
+
+1. 下载模板文件 [`template.yaml`](https://raw.githubusercontent.com/huizi-2003/sample-cost-guard-for-amazon-bedrock/main/template.yaml)（右键另存，或 `curl -O`）。
+2. 打开 [CloudFormation 控制台 → Create stack](https://console.aws.amazon.com/cloudformation/home#/stacks/create) → **With new resources (standard)**。
+3. Specify template → **Upload a template file** → 选择刚下载的 `template.yaml`。
+4. Stack name 填 `bedrock-lite-guard`。
+5. 参数 `AllowedCidrs` 填你访问 Web Console 的公网 IP（如 `1.2.3.4/32`，多个用逗号分隔；默认 `127.0.0.1/32` 为全部关闭）。
+6. 勾选 **"I acknowledge that AWS CloudFormation might create IAM resources"** → Create stack。
+7. 等待 3-5 分钟，在 **Outputs** 标签找到 `WebConsoleUrl` 即为管理界面地址。
+
+> 部署过程中模板会自动从 GitHub 下载 monitor/reconciler/web 代码，无需手动打包。
+
+### 方式二：CloudShell（推荐 CLI 用户）
 
 打开 [CloudShell](https://console.aws.amazon.com/cloudshell/)，执行：
 
@@ -233,7 +247,7 @@ aws cloudformation describe-stacks --stack-name bedrock-lite-guard \
 
 > CloudShell 会话闲置 20 分钟会断开，但不影响 CloudFormation 部署（后台异步执行）。
 
-### 方式二：本地 AWS CLI
+### 方式三：本地 AWS CLI
 
 ```bash
 git clone https://github.com/huizi-2003/sample-cost-guard-for-amazon-bedrock.git
