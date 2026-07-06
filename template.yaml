@@ -196,7 +196,7 @@ Resources:
   ConfigTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: bedrock-lite-guard
+      TableName: bedrock-cost-guard
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK

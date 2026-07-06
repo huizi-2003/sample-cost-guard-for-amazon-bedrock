@@ -21,7 +21,7 @@ from common.config import (
 
 CW_TIMEOUT = BotoConfig(connect_timeout=10, read_timeout=30, retries={'max_attempts': 1})
 
-RECONCILER_FUNCTION_NAME = os.environ.get('RECONCILER_FUNCTION_NAME', 'bedrock-lite-guard-reconciler')
+RECONCILER_FUNCTION_NAME = os.environ.get('RECONCILER_FUNCTION_NAME', 'bedrock-cost-guard-reconciler')
 
 app = FastAPI()
 

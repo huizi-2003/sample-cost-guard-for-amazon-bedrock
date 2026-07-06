@@ -2,7 +2,7 @@ import os
 import boto3
 from boto3.dynamodb.conditions import Key
 
-TABLE_NAME = os.environ.get('DDB_TABLE', 'bedrock-lite-guard')
+TABLE_NAME = os.environ.get('DDB_TABLE', 'bedrock-cost-guard')
 
 _table = None
 

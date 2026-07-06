@@ -15,13 +15,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # ----- config (override via env) -----
-STACK_NAME="${STACK_NAME:-bedrock-lite-guard}"
+STACK_NAME="${STACK_NAME:-bedrock-cost-guard}"
 REGION="${AWS_REGION:-us-east-1}"
-S3_KEY="bedrock-lite-guard/lambda.zip"
+S3_KEY="bedrock-cost-guard/lambda.zip"
 KEY_NAME="${KEY_NAME:-}"
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-S3_BUCKET="${S3_BUCKET:-bedrock-lite-guard-deploy-${ACCOUNT_ID}-${REGION}}"
+S3_BUCKET="${S3_BUCKET:-bedrock-cost-guard-deploy-${ACCOUNT_ID}-${REGION}}"
 
 # Auto-detect your public IP for the security group, unless ALLOWED_CIDR is set.
 if [ -z "${ALLOWED_CIDR:-}" ]; then
@@ -78,7 +78,7 @@ aws cloudformation deploy \
 
 # ----- 5. refresh Lambda code (S3 ref unchanged across redeploys) -----
 echo "==> Updating Lambda code..."
-for FN in bedrock-lite-guard-monitor bedrock-lite-guard-reconciler; do
+for FN in bedrock-cost-guard-monitor bedrock-cost-guard-reconciler; do
   aws lambda update-function-code \
     --function-name "${FN}" \
     --s3-bucket "${S3_BUCKET}" --s3-key "${S3_KEY}" \
@@ -114,13 +114,13 @@ if [ -n "${INSTANCE_ID}" ] && [ "${INSTANCE_ID}" != "None" ]; then
     CMD_ID=$(aws ssm send-command \
       --instance-ids "${INSTANCE_ID}" \
       --document-name "AWS-RunShellScript" \
-      --comment "Refresh bedrock-lite-guard web code" \
+      --comment "Refresh bedrock-cost-guard web code" \
       --parameters commands="[\
         \"aws s3 cp s3://${S3_BUCKET}/${S3_KEY} /tmp/lambda.zip --region ${REGION}\",\
-        \"mkdir -p /opt/bedrock-lite-guard\",\
-        \"unzip -o /tmp/lambda.zip -d /opt/bedrock-lite-guard\",\
+        \"mkdir -p /opt/bedrock-cost-guard\",\
+        \"unzip -o /tmp/lambda.zip -d /opt/bedrock-cost-guard\",\
         \"rm -f /tmp/lambda.zip\",\
-        \"systemctl restart bedrock-lite-guard-web || true\"\
+        \"systemctl restart bedrock-cost-guard-web || true\"\
       ]" \
       --region "${REGION}" \
       --query "Command.CommandId" --output text 2>/dev/null || true)
