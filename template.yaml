@@ -363,7 +363,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub "${AWS::StackName}-reconciler-schedule"
-      ScheduleExpression: cron(0 17 * * ? *)
+      ScheduleExpression: cron(0 1 * * ? *)
       State: ENABLED
       Targets:
         - Id: ReconcilerLambda
