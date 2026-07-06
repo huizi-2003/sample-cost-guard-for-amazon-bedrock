@@ -441,7 +441,9 @@ Resources:
       RestApiId: !Ref WebApi
       # Description 跟随 AllowedCidrs / Version 变化，触发资源替换 → 自动重新部署，
       # 让 Resource Policy 变更即时生效到 stage（否则改了 CIDR 也不会 redeploy）
-      Description: !Sub "Deploy for CIDRs [${AllowedCidrs}] v${Version}"
+      Description: !Sub
+        - "Deploy for CIDRs [${Cidrs}] v${Version}"
+        - Cidrs: !Join [',', !Ref AllowedCidrs]
 
   WebApiStage:
     Type: AWS::ApiGateway::Stage
