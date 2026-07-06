@@ -491,17 +491,16 @@ Resources:
                   req_type = event['RequestType']
                   props = event['ResourceProperties']
                   api_id = props['RestApiId']
-                  stage_name = props['StageName']
                   description = props.get('Description', 'CloudFormation deployment')
 
                   if req_type == 'Delete':
                       send_response(event, context, 'SUCCESS', {'id': event['PhysicalResourceId']})
                       return
 
-                  # Create/Update 都创建新的 Deployment
-                  resp = apigw.create_deployment(restApiId=api_id, stageName=stage_name, description=description)
+                  # Create/Update 都创建新的 Deployment（不指定 stageName，由 CFn Stage 资源管理）
+                  resp = apigw.create_deployment(restApiId=api_id, description=description)
                   deployment_id = resp['id']
-                  print(f"Created deployment {deployment_id} for stage {stage_name}")
+                  print(f"Created deployment {deployment_id}")
                   send_response(event, context, 'SUCCESS', {'id': deployment_id, 'DeploymentId': deployment_id})
               except Exception as e:
                   print(f"Error: {e}")
@@ -515,7 +514,6 @@ Resources:
     Properties:
       ServiceToken: !GetAtt ApiDeploymentTriggerFunction.Arn
       RestApiId: !Ref WebApi
-      StageName: prod
       # Description 包含 AllowedCidrs + Version，任一变化都触发重新创建
       Description: !Sub
         - "CIDRs=[${Cidrs}] v${Version}"
