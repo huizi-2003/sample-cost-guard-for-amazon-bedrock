@@ -247,15 +247,10 @@ git clone https://github.com/huizi-2003/sample-cost-guard-for-amazon-bedrock.git
 cd sample-cost-guard-for-amazon-bedrock
 
 # 部署（将 AllowedCidrs 改为你的出口 IP，多个用逗号分隔）
-aws cloudformation deploy \
-  --template-file template.yaml \
-  --stack-name bedrock-cost-guard \
-  --parameter-overrides AllowedCidrs=1.2.3.4/32 Version=$(date +%s) \
-  --capabilities CAPABILITY_IAM
+aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard --parameter-overrides AllowedCidrs=1.2.3.4/32 Version=$(date +%s) --capabilities CAPABILITY_IAM
 
 # 查看部署结果（获取 Web Console URL）
-aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
-  --query 'Stacks[0].Outputs'
+aws cloudformation describe-stacks --stack-name bedrock-cost-guard --query 'Stacks[0].Outputs'
 ```
 
 > CloudShell 会话闲置 20 分钟会断开，但不影响 CloudFormation 部署（后台异步执行）。
@@ -266,11 +261,7 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
 git clone https://github.com/huizi-2003/sample-cost-guard-for-amazon-bedrock.git
 cd sample-cost-guard-for-amazon-bedrock
 
-aws cloudformation deploy \
-  --template-file template.yaml \
-  --stack-name bedrock-cost-guard \
-  --parameter-overrides AllowedCidrs=1.2.3.4/32 Version=$(date +%s) \
-  --capabilities CAPABILITY_IAM
+aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard --parameter-overrides AllowedCidrs=1.2.3.4/32 Version=$(date +%s) --capabilities CAPABILITY_IAM
 ```
 
 ### 参数说明
@@ -307,8 +298,7 @@ aws cloudformation deploy \
 
 ```bash
 # 更新代码：push 后重新部署（Version 用时间戳自动变）
-aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard \
-  --parameter-overrides Version=$(date +%s) AllowedCidrs=1.2.3.4/32 --capabilities CAPABILITY_IAM
+aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard --parameter-overrides Version=$(date +%s) AllowedCidrs=1.2.3.4/32 --capabilities CAPABILITY_IAM
 
 # 手动触发对账（不用等定时任务）
 aws lambda invoke --function-name bedrock-cost-guard-reconciler --region us-east-1 /dev/null
