@@ -176,9 +176,9 @@ tr:hover { background: #f0f4ff; }
 </div>
 </div>
 
-<script src="/static/chart.min.js"></script>
+<script src="static/chart.min.js"></script>
 <script>
-const API = '';
+const API = window.location.pathname.replace(/\/$/, '');
 const COLORS = [
   'rgba(67,97,238,0.7)', 'rgba(230,57,70,0.7)', 'rgba(42,157,143,0.7)',
   'rgba(233,196,106,0.7)', 'rgba(244,162,97,0.7)', 'rgba(38,70,83,0.7)',
@@ -512,7 +512,7 @@ async function startBackfill() {
   result.textContent = '';
 
   try {
-    const resp = await fetch('/api/backfill', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({days}) });
+    const resp = await fetch(`${API}/api/backfill`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({days}) });
     const data = await resp.json();
     if (resp.ok) {
       status.textContent = '回填完成';
@@ -538,8 +538,8 @@ async function loadMonitorChart() {
   try {
     // Fetch today and yesterday in parallel
     const [todayResp, yesterdayResp] = await Promise.all([
-      fetch(`/api/monitor/${utcDate}/models`),
-      fetch(`/api/monitor/${utcDate}/yesterday`),
+      fetch(`${API}/api/monitor/${utcDate}/models`),
+      fetch(`${API}/api/monitor/${utcDate}/yesterday`),
     ]);
     const todayData = await todayResp.json();
     let yesterdayData = null;
