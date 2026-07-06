@@ -508,18 +508,17 @@ async function startBackfill() {
 
   btn.disabled = true;
   progress.style.display = 'block';
-  status.textContent = `正在回填 ${days} 天数据，预计需要 ${Math.ceil(days * 4 / 60)} 分钟，请勿关闭页面...`;
+  status.textContent = `正在触发 ${days} 天回填...`;
   result.textContent = '';
 
   try {
     const resp = await fetch(`${API}/api/backfill`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({days}) });
     const data = await resp.json();
     if (resp.ok) {
-      status.textContent = '回填完成';
-      result.innerHTML = `成功: ${data.success_count} 天, 失败: ${data.failed_count} 天` +
-        (data.failed_dates && data.failed_dates.length > 0 ? '<br>失败日期: ' + data.failed_dates.map(f => f.date).join(', ') : '');
+      status.textContent = '触发完成';
+      result.innerHTML = `已异步触发 ${data.triggered} 天对账，数据将在几分钟内陆续出现`;
     } else {
-      status.textContent = '回填失败';
+      status.textContent = '触发失败';
       result.textContent = data.error || '未知错误';
     }
   } catch (e) {

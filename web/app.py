@@ -360,32 +360,24 @@ async def backfill(request: Request):
 
     lambda_client = boto3.client('lambda')
     now = datetime.now(timezone.utc)
-    results = {'success': [], 'failed': []}
+    triggered = []
 
     for i in range(days):
         target_date = (now - timedelta(days=i + 2)).strftime('%Y-%m-%d')  # 从 T-2 开始
         try:
-            resp = lambda_client.invoke(
+            lambda_client.invoke(
                 FunctionName=RECONCILER_FUNCTION_NAME,
-                InvocationType='RequestResponse',
+                InvocationType='Event',
                 Payload=json.dumps({'date': target_date}),
             )
-            payload = json.loads(resp['Payload'].read())
-            if payload.get('statusCode') == 200:
-                results['success'].append(target_date)
-            else:
-                results['failed'].append({'date': target_date, 'error': payload.get('error', 'unknown')})
+            triggered.append(target_date)
         except Exception as e:
-            results['failed'].append({'date': target_date, 'error': str(e)})
-
-        if i < days - 1:
-            time.sleep(2)  # 避免 CE API 限流
+            pass  # async fire-and-forget
 
     return {
         'total': days,
-        'success_count': len(results['success']),
-        'failed_count': len(results['failed']),
-        'failed_dates': results['failed'],
+        'triggered': len(triggered),
+        'message': f'已异步触发 {len(triggered)} 天对账，结果将陆续写入数据库',
     }
 
 
