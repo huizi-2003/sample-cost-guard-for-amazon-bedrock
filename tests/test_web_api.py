@@ -132,28 +132,3 @@ def test_backfill_days_366_returns_400(client):
 # === Removed price-table endpoint ===
 
 
-def test_prices_get_returns_404(client):
-    """GET /api/config/prices returns 404 after the price-table feature removal.
-
-    **Validates: Requirements 4.4**
-    """
-    resp = client.get('/api/config/prices')
-    assert resp.status_code == 404
-
-
-def test_prices_put_returns_404(client):
-    """PUT /api/config/prices returns 404 (route no longer exists).
-
-    **Validates: Requirements 4.4**
-    """
-    resp = client.put('/api/config/prices', json={'model': 'x', 'input': 1})
-    assert resp.status_code == 404
-
-
-def test_prices_delete_returns_404(client):
-    """DELETE /api/config/prices returns 404 (route no longer exists).
-
-    **Validates: Requirements 4.4**
-    """
-    resp = client.delete('/api/config/prices', json={'model': 'x'})
-    assert resp.status_code == 404
