@@ -33,3 +33,4 @@ samconfig.toml
 .idea/
 *.swp
 
+.kiro/
