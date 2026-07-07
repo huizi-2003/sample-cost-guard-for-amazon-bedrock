@@ -1,13 +1,13 @@
 # Bedrock Cost Guard
 
-AWS Bedrock 用量管控工具集：反盗刷监控、每日对账、Web 管理界面。
+AWS Bedrock 用量管控工具集：用量监控、每日对账、Web 管理界面。
 
 ## 功能
 
 > **注意**：本工具监控的是 Cost Explorer 中 **Amazon Bedrock Service**（不是 Amazon Bedrock）。  
 > Claude 等模型的调用计费在 `Amazon Bedrock Service` 下，而 Nova 等模型在 `Amazon Bedrock` 下，两者是不同的 CE Service。
 
-### 1. Monitor — 反盗刷监控
+### 1. Monitor — 用量监控
 
 - 每 5 分钟跨所有 Region 聚合 Bedrock token 用量
 - 覆盖 AWS/Bedrock + AWS/BedrockMantle 双 namespace，所有模型、所有 token 类型（含 cache）
@@ -298,7 +298,7 @@ bedrock-cost-guard/
 │   └── webhook.py         # 通知发送（飞书/钉钉/企微）
 ├── monitor/
 │   ├── __init__.py
-│   └── handler.py         # 反盗刷监控 Lambda
+│   └── handler.py         # 用量监控 Lambda
 ├── reconciler/
 │   ├── __init__.py
 │   └── handler.py         # 每日对账 Lambda
