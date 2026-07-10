@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "AWS Bedrock \u7528\u91CF\u76D1\u63A7 + \u6BCF\u65E5\u5BF9\u8D26 + \u6210\u672C\u4F30\u7B97 \u2014 \u7EAF Serverless\uFF0C\u4E00\u952E\u90E8\u7F72"
+Description: "AWS Bedrock 用量监控 + 每日对账 + 成本估算 - Serverless 一键部署"
 
 Parameters:
   GitHubOwner:
