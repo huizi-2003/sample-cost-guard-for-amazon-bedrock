@@ -801,17 +801,27 @@ function renderModelChart(data, yesterdayData) {
 
   // Yesterday total as dashed line
   if (yesterdayData && Object.keys(yesterdayData).length > 0) {
-    // Aggregate yesterday all models by time → cumulative total → convert to deltas aligned to today's labels
+    // For each model, build a time→cumulative map, then at each time point
+    // use carry-forward (last known value) so missing points don't cause drops.
+    const allYdayTimes = new Set();
+    Object.values(yesterdayData).forEach(series => series.forEach(p => allYdayTimes.add(p.time)));
+    const ydaySortedTimes = [...allYdayTimes].sort();
+
+    // Build per-time total cumulative using carry-forward per model
     const ydayTimeMap = {};
-    Object.values(yesterdayData).forEach(series => {
-      series.forEach(p => {
-        ydayTimeMap[p.time] = (ydayTimeMap[p.time] || 0) + p.tokens;
+    ydaySortedTimes.forEach(t => {
+      let total = 0;
+      Object.values(yesterdayData).forEach(series => {
+        // Find last point at or before time t
+        let lastVal = 0;
+        for (const p of series) {
+          if (p.time <= t) lastVal = p.tokens;
+        }
+        total += lastVal;
       });
+      ydayTimeMap[t] = total;
     });
-    // We need cumulative at each time for yesterday, then convert to deltas using today's labels
-    const ydayTimes = Object.keys(ydayTimeMap).sort();
-    // Build cumulative lookup: at each time, what's the total cumulative
-    // Actually the tokens in each series point is already cumulative per model, so sum across models gives cumulative total
+
     // Convert to deltas on today's label grid
     let prevYday = 0;
     const ydayDeltas = labels.map(t => {

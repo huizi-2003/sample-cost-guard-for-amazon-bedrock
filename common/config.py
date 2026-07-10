@@ -34,7 +34,15 @@ def query_by_pk(pk):
 
 def get_thresholds():
     items = query_by_pk('THRESHOLD')
-    return {item['SK']: int(item['value']) for item in items} if items else {'5min': 999999999, '15min': 999999999, 'daily': 999999999}
+    defaults = {'5min': 999999999, '15min': 999999999, 'daily': 999999999}
+    if not items:
+        return defaults
+    result = {item['SK']: int(item['value']) for item in items}
+    # 确保所有 key 都存在，缺失的用默认值补齐
+    for key, default_val in defaults.items():
+        if key not in result:
+            result[key] = default_val
+    return result
 
 
 DEFAULT_REGIONS = 'us-east-1,us-east-2,us-west-1,us-west-2,eu-central-1,eu-west-1,eu-west-3,ap-northeast-1,ap-southeast-1,ap-southeast-2'
@@ -103,12 +111,19 @@ def save_webhook_config(items):
 
 
 def get_reconcile_dates(limit=30):
-    """获取最近有对账数据的日期列表"""
+    """获取最近有对账数据的日期列表（带分页）"""
     table = _get_table()
-    resp = table.scan(
-        FilterExpression='begins_with(PK, :prefix) AND SK = :sk',
-        ExpressionAttributeValues={':prefix': 'RECONCILE#', ':sk': '_summary'},
-        ProjectionExpression='PK',
-    )
-    dates = sorted([item['PK'].replace('RECONCILE#', '') for item in resp.get('Items', [])], reverse=True)
+    all_items = []
+    scan_kwargs = {
+        'FilterExpression': 'begins_with(PK, :prefix) AND SK = :sk',
+        'ExpressionAttributeValues': {':prefix': 'RECONCILE#', ':sk': '_summary'},
+        'ProjectionExpression': 'PK',
+    }
+    while True:
+        resp = table.scan(**scan_kwargs)
+        all_items.extend(resp.get('Items', []))
+        if 'LastEvaluatedKey' not in resp:
+            break
+        scan_kwargs['ExclusiveStartKey'] = resp['LastEvaluatedKey']
+    dates = sorted([item['PK'].replace('RECONCILE#', '') for item in all_items], reverse=True)
     return dates[:limit]
