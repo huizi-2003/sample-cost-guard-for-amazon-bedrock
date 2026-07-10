@@ -1,8 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: >
-  Bedrock Cost Guard - anti-fraud monitor + daily reconciler + web console (serverless).
-  Self-contained stack: creates S3 bucket, downloads code from GitHub, deploys
-  Lambda functions + DynamoDB + EventBridge + API Gateway. No CLI / no pre-packaging required.
+Description: "AWS Bedrock \u7528\u91CF\u76D1\u63A7 + \u6BCF\u65E5\u5BF9\u8D26 + \u6210\u672C\u4F30\u7B97 \u2014 \u7EAF Serverless\uFF0C\u4E00\u952E\u90E8\u7F72"
 
 Parameters:
   GitHubOwner:
