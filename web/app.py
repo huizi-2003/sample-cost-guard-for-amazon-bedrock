@@ -338,6 +338,8 @@ def _match_pricing(model_name):
 async def today_cost():
     """从 DDB 读取今日监控数据，按价格常量计算估算费用。
 
+    若 DDB 中无新格式（按类型拆分）数据，fallback 到实时查 CW。
+
     返回:
       - total_cost: 今日预估总费用 ($)
       - models: {model: {cost, input, output, cache_read, cache_write, tokens}}
@@ -347,12 +349,29 @@ async def today_cost():
     utc_today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     items = query_by_pk(f'MONITOR#{utc_today}')
 
-    if not items:
-        return {'total_cost': 0, 'models': {}, 'timeline': [], 'unpriced_models': []}
+    # 检查是否有新格式数据（models 值为 dict）
+    has_new_format = False
+    for item in items:
+        models = item.get('models')
+        if models and isinstance(models, dict):
+            for v in models.values():
+                if isinstance(v, dict):
+                    has_new_format = True
+                    break
+        if has_new_format:
+            break
 
-    # 聚合所有时间点的模型 token 数据
-    model_totals = {}  # {model: {input:x, output:y, cache_read:z, cache_write:w}}
-    timeline_points = {}  # {time: cost_delta}
+    if has_new_format:
+        return _calc_cost_from_ddb(items)
+
+    # Fallback: 实时查 CW 拿按类型拆分的数据
+    return await _calc_cost_from_cw()
+
+
+def _calc_cost_from_ddb(items):
+    """从 DDB 新格式 models 数据计算费用。"""
+    model_totals = {}
+    timeline_points = {}
     unpriced = set()
 
     for item in items:
@@ -363,8 +382,8 @@ async def today_cost():
 
         point_cost = 0
         for model_name, type_counts in models.items():
-            # 兼容旧格式（type_counts 可能是 int 而非 dict）
-            if isinstance(type_counts, (int, float)):
+            # 跳过旧格式（非 dict）
+            if not isinstance(type_counts, dict):
                 continue
 
             prices = _match_pricing(model_name)
@@ -376,15 +395,96 @@ async def today_cost():
                 model_totals[model_name] = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}
 
             for token_type in ('input', 'output', 'cache_read', 'cache_write'):
-                tokens = int(type_counts.get(token_type, 0)) if isinstance(type_counts, dict) else 0
+                tokens = int(type_counts.get(token_type, 0))
                 model_totals[model_name][token_type] += tokens
-                # cost = tokens / 1_000_000 * $/MTok
                 point_cost += tokens / 1_000_000 * prices[token_type]
 
         if point_cost > 0:
             timeline_points[time_str] = timeline_points.get(time_str, 0) + point_cost
 
-    # 计算每模型费用
+    return _build_cost_response(model_totals, timeline_points, unpriced)
+
+
+async def _calc_cost_from_cw():
+    """Fallback: 实时从 CW 查按类型拆分的 token 数据，计算估算费用。"""
+    utc_today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    day_start = datetime.strptime(utc_today, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    end = datetime.now(timezone.utc)
+
+    regions = get_regions()
+    if not regions:
+        return {'total_cost': 0, 'models': {}, 'timeline': [], 'unpriced_models': []}
+
+    model_totals = {}
+    timeline_points = {}
+    unpriced = set()
+
+    def fetch_region_typed(region):
+        """查单个 region，返回按模型+类型拆分的时间序列。"""
+        session = boto3.session.Session()
+        cw = session.client('cloudwatch', region_name=region, config=CW_TIMEOUT)
+        queries = [
+            {'Id': 'detail_bedrock', 'Expression': "SEARCH('{AWS/Bedrock,ModelId} TokenCount', 'Sum', 3600)", 'ReturnData': True},
+            {'Id': 'detail_mantle', 'Expression': "SEARCH('{AWS/BedrockMantle,Model} Tokens', 'Sum', 3600)", 'ReturnData': True},
+        ]
+        resp = cw.get_metric_data(MetricDataQueries=queries, StartTime=day_start, EndTime=end)
+        results = []
+        for r in resp['MetricDataResults']:
+            label = r['Label']
+            model_name = _extract_model_name(label)
+            token_type = _extract_token_type(label)
+            for ts, val in zip(r['Timestamps'], r['Values']):
+                if val > 0:
+                    ts_str = ts.astimezone(timezone.utc).strftime('%H:%M')
+                    results.append((model_name, token_type, ts_str, val))
+        return results
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(fetch_region_typed, r): r for r in regions}
+        for future in as_completed(futures):
+            try:
+                for model_name, token_type, ts_str, val in future.result():
+                    prices = _match_pricing(model_name)
+                    if not prices:
+                        unpriced.add(model_name)
+                        continue
+                    if model_name not in model_totals:
+                        model_totals[model_name] = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}
+                    model_totals[model_name][token_type] += int(val)
+                    cost_delta = val / 1_000_000 * prices[token_type]
+                    timeline_points[ts_str] = timeline_points.get(ts_str, 0) + cost_delta
+            except Exception:
+                pass
+
+    return _build_cost_response(model_totals, timeline_points, unpriced)
+
+
+def _extract_model_name(label):
+    """与 monitor/handler.py 的 extract_model_name 一致。"""
+    label = label.replace('AWS/Bedrock ', '').replace('AWS/BedrockMantle ', '')
+    label = label.replace('global.anthropic.', '').replace('anthropic.', '')
+    for suffix in (' CacheReadInputTokenCount', ' CacheWriteInputTokenCount',
+                   ' InputTokenCount', ' OutputTokenCount',
+                   ' TotalInputTokens', ' TotalOutputTokens', ' Tokens'):
+        if label.endswith(suffix):
+            label = label[:-len(suffix)]
+            break
+    return label.strip()
+
+
+def _extract_token_type(label):
+    """与 monitor/handler.py 的 extract_token_type 一致。"""
+    if 'CacheRead' in label or 'cacheread' in label.lower():
+        return 'cache_read'
+    if 'CacheWrite' in label or 'cachewrite' in label.lower():
+        return 'cache_write'
+    if 'Output' in label:
+        return 'output'
+    return 'input'
+
+
+def _build_cost_response(model_totals, timeline_points, unpriced):
+    """从聚合数据构建 today-cost 响应。"""
     model_costs = {}
     total_cost = 0
     for model_name, type_counts in model_totals.items():
