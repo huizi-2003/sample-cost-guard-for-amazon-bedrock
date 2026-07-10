@@ -138,8 +138,19 @@ tr:hover { background: #f0f4ff; }
 <div id="monitor" class="panel">
   <div id="monitor-alert" class="alert-bar"></div>
   <div style="font-size:12px; color:#999; margin-bottom:8px;">时间轴为 UTC，数据每 5 分钟更新</div>
+  <!-- 预估费用卡片 -->
+  <div id="cost-cards" class="summary" style="display:none;">
+    <div class="summary-card"><div class="value" id="cost-total">-</div><div class="label">今日预估费用</div></div>
+    <div class="summary-card"><div class="value" id="cost-top-model">-</div><div class="label" id="cost-top-model-label">Top 模型</div></div>
+    <div class="summary-card"><div class="value" id="cost-unpriced">-</div><div class="label">未定价模型数</div></div>
+  </div>
+  <div id="cost-note" style="display:none; font-size:12px; color:#999; margin:-12px 0 12px;">* 估算值，cache write 按 5min 价格计算；in-region 调用实际费用约高 10%</div>
   <div id="monitor-empty" style="display:none; text-align:center; padding:60px; color:#888;">
     暂无数据，监控数据每 5 分钟更新
+  </div>
+  <!-- 累计费用趋势线 -->
+  <div id="cost-trend-container" style="display:none; position:relative; height:200px; margin-bottom:20px;">
+    <canvas id="cost-trend-chart"></canvas>
   </div>
   <div id="monitor-chart-container" style="display:none; position:relative; height:420px;">
     <canvas id="monitor-chart"></canvas>
@@ -186,6 +197,7 @@ const COLORS = [
 // ===== Tabs =====
 let monitorRefreshTimer = null;
 let monitorChart = null;
+let costTrendChart = null;
 let overviewTrendChart = null;
 let overviewBarChart = null;
 
@@ -198,7 +210,8 @@ document.querySelectorAll('.tab').forEach(tab => {
 
     if (tab.dataset.panel === 'monitor') {
       loadMonitorChart();
-      monitorRefreshTimer = setInterval(loadMonitorChart, 5 * 60 * 1000);
+      loadTodayCost();
+      monitorRefreshTimer = setInterval(() => { loadMonitorChart(); loadTodayCost(); }, 5 * 60 * 1000);
     } else {
       if (monitorRefreshTimer) { clearInterval(monitorRefreshTimer); monitorRefreshTimer = null; }
     }
@@ -578,6 +591,89 @@ async function startBackfill() {
 }
 
 // ===== Tab 3: 今日监控 =====
+async function loadTodayCost() {
+  try {
+    const resp = await fetch(`${API}/api/today-cost`);
+    const data = await resp.json();
+
+    const cardsEl = document.getElementById('cost-cards');
+    const trendEl = document.getElementById('cost-trend-container');
+    const noteEl = document.getElementById('cost-note');
+
+    if (data.total_cost === 0 && data.timeline.length === 0) {
+      cardsEl.style.display = 'none';
+      trendEl.style.display = 'none';
+      noteEl.style.display = 'none';
+      return;
+    }
+
+    // 更新卡片
+    cardsEl.style.display = 'flex';
+    noteEl.style.display = 'block';
+    document.getElementById('cost-total').textContent = '$' + data.total_cost.toFixed(2);
+
+    // Top 模型
+    const modelEntries = Object.entries(data.models);
+    if (modelEntries.length > 0) {
+      const top = modelEntries.sort((a, b) => b[1].cost - a[1].cost)[0];
+      document.getElementById('cost-top-model').textContent = '$' + top[1].cost.toFixed(2);
+      document.getElementById('cost-top-model-label').textContent = shortenModelName(top[0]);
+    }
+
+    // 未定价模型数
+    document.getElementById('cost-unpriced').textContent = data.unpriced_models.length;
+
+    // 趋势线
+    if (data.timeline.length > 1) {
+      trendEl.style.display = 'block';
+      renderCostTrend(data.timeline);
+    } else {
+      trendEl.style.display = 'none';
+    }
+  } catch (e) {
+    // 静默失败，不影响主图表
+  }
+}
+
+function renderCostTrend(timeline) {
+  const canvas = document.getElementById('cost-trend-chart');
+  const labels = timeline.map(p => p.time);
+  const values = timeline.map(p => p.cost);
+
+  const cfg = {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: '累计费用 ($)',
+        data: values,
+        borderColor: '#4361ee',
+        backgroundColor: 'rgba(67, 97, 238, 0.1)',
+        borderWidth: 2,
+        fill: true,
+        pointRadius: 0,
+        tension: 0.3,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        title: { display: true, text: '今日累计预估费用', font: { size: 14 }, color: '#1a1a2e' },
+        tooltip: { callbacks: { label: (item) => '$' + item.parsed.y.toFixed(4) } },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#888', maxTicksLimit: 12 } },
+        y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { color: '#888', callback: (v) => '$' + v.toFixed(2) } },
+      },
+    },
+  };
+
+  if (costTrendChart) { costTrendChart.destroy(); costTrendChart = null; }
+  costTrendChart = new Chart(canvas, cfg);
+}
+
 async function loadMonitorChart() {
   const today = new Date();
   const utcDate = today.toISOString().slice(0, 10);

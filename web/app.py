@@ -230,7 +230,12 @@ async def monitor_models(date: str):
             for model, tokens in models.items():
                 if model not in all_models:
                     all_models[model] = {}
-                all_models[model][time_str] = all_models[model].get(time_str, 0) + int(tokens)
+                # 兼容新格式（dict with type counts）和旧格式（int）
+                if isinstance(tokens, dict):
+                    total = sum(int(v) for v in tokens.values())
+                else:
+                    total = int(tokens)
+                all_models[model][time_str] = all_models[model].get(time_str, 0) + total
 
         result = {}
         for model, time_map in all_models.items():
@@ -306,6 +311,110 @@ async def monitor_yesterday(date: str):
 
     # 复用 monitor_models 的逻辑
     return await monitor_models(yesterday)
+
+
+# ===== 今日成本估算 =====
+
+# $/MTok — Bedrock cross-region 基准价格（direct in-region ≈ ×1.1，差异忽略）
+# cache_write 统一用 5min 标准价格
+PRICING = {
+    'opus':   {'input': 5,   'output': 25,  'cache_read': 0.5,  'cache_write': 6.25},
+    'fable':  {'input': 10,  'output': 50,  'cache_read': 1.0,  'cache_write': 12.5},
+    'sonnet': {'input': 3,   'output': 15,  'cache_read': 0.3,  'cache_write': 3.75},
+    'haiku':  {'input': 1,   'output': 5,   'cache_read': 0.1,  'cache_write': 1.25},
+}
+
+
+def _match_pricing(model_name):
+    """按模型名模糊匹配到价格系列，返回价格 dict 或 None。"""
+    lower = model_name.lower()
+    for series, prices in PRICING.items():
+        if series in lower:
+            return prices
+    return None
+
+
+@app.get('/api/today-cost')
+async def today_cost():
+    """从 DDB 读取今日监控数据，按价格常量计算估算费用。
+
+    返回:
+      - total_cost: 今日预估总费用 ($)
+      - models: {model: {cost, input, output, cache_read, cache_write, tokens}}
+      - timeline: [{time, cost}] 累计费用趋势
+      - unpriced_models: 无法匹配价格的模型列表
+    """
+    utc_today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    items = query_by_pk(f'MONITOR#{utc_today}')
+
+    if not items:
+        return {'total_cost': 0, 'models': {}, 'timeline': [], 'unpriced_models': []}
+
+    # 聚合所有时间点的模型 token 数据
+    model_totals = {}  # {model: {input:x, output:y, cache_read:z, cache_write:w}}
+    timeline_points = {}  # {time: cost_delta}
+    unpriced = set()
+
+    for item in items:
+        time_str = item['SK'].replace('T#', '')
+        models = item.get('models')
+        if not models:
+            continue
+
+        point_cost = 0
+        for model_name, type_counts in models.items():
+            # 兼容旧格式（type_counts 可能是 int 而非 dict）
+            if isinstance(type_counts, (int, float)):
+                continue
+
+            prices = _match_pricing(model_name)
+            if not prices:
+                unpriced.add(model_name)
+                continue
+
+            if model_name not in model_totals:
+                model_totals[model_name] = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}
+
+            for token_type in ('input', 'output', 'cache_read', 'cache_write'):
+                tokens = int(type_counts.get(token_type, 0)) if isinstance(type_counts, dict) else 0
+                model_totals[model_name][token_type] += tokens
+                # cost = tokens / 1_000_000 * $/MTok
+                point_cost += tokens / 1_000_000 * prices[token_type]
+
+        if point_cost > 0:
+            timeline_points[time_str] = timeline_points.get(time_str, 0) + point_cost
+
+    # 计算每模型费用
+    model_costs = {}
+    total_cost = 0
+    for model_name, type_counts in model_totals.items():
+        prices = _match_pricing(model_name)
+        if not prices:
+            continue
+        cost = 0
+        for token_type in ('input', 'output', 'cache_read', 'cache_write'):
+            cost += type_counts[token_type] / 1_000_000 * prices[token_type]
+        total_tokens = sum(type_counts.values())
+        model_costs[model_name] = {
+            'cost': round(cost, 6),
+            'tokens': total_tokens,
+            **{k: v for k, v in type_counts.items()},
+        }
+        total_cost += cost
+
+    # 累计费用趋势线
+    timeline = []
+    cumulative = 0
+    for time_str in sorted(timeline_points.keys()):
+        cumulative += timeline_points[time_str]
+        timeline.append({'time': time_str, 'cost': round(cumulative, 6)})
+
+    return {
+        'total_cost': round(total_cost, 4),
+        'models': model_costs,
+        'timeline': timeline,
+        'unpriced_models': sorted(unpriced),
+    }
 
 
 # ===== 配置管理 =====

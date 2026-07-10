@@ -43,11 +43,10 @@ def fetch_region(region, start_daily, start_15min, start_5min, end):
     return {'region': region, '5min': total_5min, '15min': total_15min, 'daily': total_daily}
 
 
-def clean_label(label):
+def extract_model_name(label):
+    """从 CW SEARCH label 中提取模型名（去掉 namespace 前缀和 token 类型后缀）。"""
     label = label.replace('AWS/Bedrock ', '').replace('AWS/BedrockMantle ', '')
     label = label.replace('global.anthropic.', '').replace('anthropic.', '')
-    # SEARCH 返回的 label 形如 "claude-sonnet-5 CacheReadInputTokenCount"，
-    # 末尾带着指标名。去掉指标名后缀，使同一模型的各 token 类型聚合为一个模型。
     for suffix in (' CacheReadInputTokenCount', ' CacheWriteInputTokenCount',
                    ' InputTokenCount', ' OutputTokenCount',
                    ' TotalInputTokens', ' TotalOutputTokens', ' Tokens'):
@@ -57,10 +56,23 @@ def clean_label(label):
     return label.strip()
 
 
+def extract_token_type(label):
+    """从 CW SEARCH label 中提取 token 类型：input/output/cache_read/cache_write。"""
+    if 'CacheRead' in label or 'cacheread' in label.lower():
+        return 'cache_read'
+    if 'CacheWrite' in label or 'cachewrite' in label.lower():
+        return 'cache_write'
+    if 'Output' in label:
+        return 'output'
+    # 默认归为 input（InputTokenCount, TotalInputTokens, 或无法识别的）
+    return 'input'
+
+
 DETAIL_PERIOD = 300  # 明细查询的 Period（秒），与 QUERIES_DETAIL 中的 300 对齐
 
 
 def fetch_detail(region, start, end):
+    """返回 {model_name: {input:x, output:y, cache_read:z, cache_write:w}} 按类型拆分的明细。"""
     # CloudWatch Period 桶按整 5 分钟边界对齐。提醒窗口（如 now-5min ~ now）
     # 又窄又不对齐，且指标有发布延迟，直接查常常拿不到完整的桶。
     # 这里把 start 向下对齐到 Period 边界、再往前多取一个 Period，保证至少覆盖
@@ -73,10 +85,13 @@ def fetch_detail(region, start, end):
     resp = cw.get_metric_data(MetricDataQueries=QUERIES_DETAIL, StartTime=aligned_start, EndTime=end)
     models = {}
     for r in resp['MetricDataResults']:
-        label = clean_label(r['Label'])
+        model_name = extract_model_name(r['Label'])
+        token_type = extract_token_type(r['Label'])
         for ts, val in zip(r['Timestamps'], r['Values']):
             if ts >= start and val > 0:
-                models[label] = models.get(label, 0) + val
+                if model_name not in models:
+                    models[model_name] = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}
+                models[model_name][token_type] += val
     return models
 
 
@@ -160,8 +175,11 @@ def handler(event, context):
                 for future in as_completed(futures):
                     try:
                         models = future.result()
-                        for label, val in models.items():
-                            all_models_5min[label] = all_models_5min.get(label, 0) + int(val)
+                        for model_name, type_counts in models.items():
+                            if model_name not in all_models_5min:
+                                all_models_5min[model_name] = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}
+                            for token_type, val in type_counts.items():
+                                all_models_5min[model_name][token_type] += int(val)
                     except Exception:
                         pass
 
@@ -202,8 +220,8 @@ def handler(event, context):
             for future in as_completed(futures):
                 try:
                     models = future.result()
-                    for label, val in models.items():
-                        all_models[label] = all_models.get(label, 0) + val
+                    for model_name, type_counts in models.items():
+                        all_models[model_name] = all_models.get(model_name, 0) + sum(type_counts.values())
                 except Exception as e:
                     logger.warning(f"Detail fetch failed: {e}")
 

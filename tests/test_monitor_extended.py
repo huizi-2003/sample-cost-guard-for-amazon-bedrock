@@ -11,61 +11,86 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock, call
 
-from monitor.handler import clean_label, should_suppress, mark_alerted, DETAIL_PERIOD
+from monitor.handler import extract_model_name, extract_token_type, should_suppress, mark_alerted, DETAIL_PERIOD
 
 
-# === clean_label tests ===
+# === extract_model_name tests (formerly clean_label) ===
 
 
 class TestCleanLabel:
-    """clean_label strips namespace prefix and metric name suffix."""
+    """extract_model_name strips namespace prefix and metric name suffix."""
 
     def test_bedrock_namespace_prefix_removed(self):
-        assert 'AWS/Bedrock' not in clean_label('AWS/Bedrock claude-sonnet-4 InputTokenCount')
+        assert 'AWS/Bedrock' not in extract_model_name('AWS/Bedrock claude-sonnet-4 InputTokenCount')
 
     def test_bedrock_mantle_prefix_removed(self):
-        assert 'AWS/BedrockMantle' not in clean_label('AWS/BedrockMantle claude-opus-4 TotalInputTokens')
+        assert 'AWS/BedrockMantle' not in extract_model_name('AWS/BedrockMantle claude-opus-4 TotalInputTokens')
 
     def test_input_token_count_suffix_removed(self):
-        result = clean_label('AWS/Bedrock claude-sonnet-4 InputTokenCount')
+        result = extract_model_name('AWS/Bedrock claude-sonnet-4 InputTokenCount')
         assert result == 'claude-sonnet-4'
 
     def test_output_token_count_suffix_removed(self):
-        result = clean_label('AWS/Bedrock claude-sonnet-4 OutputTokenCount')
+        result = extract_model_name('AWS/Bedrock claude-sonnet-4 OutputTokenCount')
         assert result == 'claude-sonnet-4'
 
     def test_cache_read_suffix_removed(self):
-        result = clean_label('AWS/Bedrock claude-sonnet-4 CacheReadInputTokenCount')
+        result = extract_model_name('AWS/Bedrock claude-sonnet-4 CacheReadInputTokenCount')
         assert result == 'claude-sonnet-4'
 
     def test_cache_write_suffix_removed(self):
-        result = clean_label('AWS/Bedrock claude-sonnet-4 CacheWriteInputTokenCount')
+        result = extract_model_name('AWS/Bedrock claude-sonnet-4 CacheWriteInputTokenCount')
         assert result == 'claude-sonnet-4'
 
     def test_mantle_total_input_tokens_suffix(self):
-        result = clean_label('AWS/BedrockMantle claude-opus-4 TotalInputTokens')
+        result = extract_model_name('AWS/BedrockMantle claude-opus-4 TotalInputTokens')
         assert result == 'claude-opus-4'
 
     def test_mantle_total_output_tokens_suffix(self):
-        result = clean_label('AWS/BedrockMantle claude-opus-4 TotalOutputTokens')
+        result = extract_model_name('AWS/BedrockMantle claude-opus-4 TotalOutputTokens')
         assert result == 'claude-opus-4'
 
     def test_global_anthropic_prefix_removed(self):
-        result = clean_label('AWS/Bedrock global.anthropic.claude-sonnet-4 InputTokenCount')
+        result = extract_model_name('AWS/Bedrock global.anthropic.claude-sonnet-4 InputTokenCount')
         assert result == 'claude-sonnet-4'
 
     def test_anthropic_prefix_removed(self):
-        result = clean_label('AWS/Bedrock anthropic.claude-sonnet-4 InputTokenCount')
+        result = extract_model_name('AWS/Bedrock anthropic.claude-sonnet-4 InputTokenCount')
         assert result == 'claude-sonnet-4'
 
     def test_label_without_known_suffix(self):
         # If no known suffix matches, label is returned cleaned of namespace only
-        result = clean_label('AWS/Bedrock some-model UnknownMetric')
+        result = extract_model_name('AWS/Bedrock some-model UnknownMetric')
         assert result == 'some-model UnknownMetric'
 
     def test_tokens_suffix_removed(self):
-        result = clean_label('AWS/BedrockMantle some-model Tokens')
+        result = extract_model_name('AWS/BedrockMantle some-model Tokens')
         assert result == 'some-model'
+
+
+class TestExtractTokenType:
+    """extract_token_type correctly identifies token type from label."""
+
+    def test_input(self):
+        assert extract_token_type('AWS/Bedrock claude-sonnet-4 InputTokenCount') == 'input'
+
+    def test_output(self):
+        assert extract_token_type('AWS/Bedrock claude-sonnet-4 OutputTokenCount') == 'output'
+
+    def test_cache_read(self):
+        assert extract_token_type('AWS/Bedrock claude-sonnet-4 CacheReadInputTokenCount') == 'cache_read'
+
+    def test_cache_write(self):
+        assert extract_token_type('AWS/Bedrock claude-sonnet-4 CacheWriteInputTokenCount') == 'cache_write'
+
+    def test_mantle_total_input(self):
+        assert extract_token_type('AWS/BedrockMantle claude-opus-4 TotalInputTokens') == 'input'
+
+    def test_mantle_total_output(self):
+        assert extract_token_type('AWS/BedrockMantle claude-opus-4 TotalOutputTokens') == 'output'
+
+    def test_unknown_defaults_to_input(self):
+        assert extract_token_type('AWS/Bedrock some-model Tokens') == 'input'
 
 
 # === should_suppress tests ===
