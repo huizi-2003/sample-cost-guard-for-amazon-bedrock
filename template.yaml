@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "AWS Bedrock 用量监控 + 每日对账 + 成本估算 - Serverless 一键部署"
+Description: "Bedrock Cost Guard - usage monitor + daily reconciler + cost estimation (serverless, one-click deploy)"
 
 Parameters:
   GitHubOwner:
