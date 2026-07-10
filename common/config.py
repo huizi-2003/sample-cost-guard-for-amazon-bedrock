@@ -69,11 +69,37 @@ def get_reconcile_by_date(date):
 
 
 def get_webhook_config():
-    """从 DDB 读取 webhook 配置"""
-    item = get_item('CONFIG', 'webhook')
+    """从 DDB 读取 webhook 配置（兼容旧格式）。
+
+    返回 list[dict]，每个 dict 含 name/url/type 字段。
+    兼容逻辑：
+      - 新格式 (SK=webhooks): 直接返回 items 列表
+      - 旧格式 (SK=webhook): 迁移为新格式并返回
+      - 无配置: 返回空列表
+    """
+    # 尝试读新格式
+    item = get_item('CONFIG', 'webhooks')
     if item:
-        return item.get('url', ''), item.get('type', 'feishu')
-    return '', 'feishu'
+        return item.get('items', [])
+
+    # 兼容旧格式：单条 webhook
+    old = get_item('CONFIG', 'webhook')
+    if old and old.get('url'):
+        migrated = [{'name': old.get('type', 'feishu'), 'url': old['url'], 'type': old.get('type', 'feishu')}]
+        # 自动迁移到新格式
+        put_item('CONFIG', 'webhooks', items=migrated)
+        return migrated
+
+    return []
+
+
+def save_webhook_config(items):
+    """保存多 webhook 配置到 DDB。
+
+    Args:
+        items: list[dict]，每个 dict 含 name/url/type 字段
+    """
+    put_item('CONFIG', 'webhooks', items=items)
 
 
 def get_reconcile_dates(limit=30):

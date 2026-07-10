@@ -125,32 +125,55 @@ class TestAlertState:
 
 
 class TestGetWebhookConfig:
-    """get_webhook_config: reads CONFIG#webhook or returns defaults."""
+    """get_webhook_config: reads CONFIG#webhooks (list) or migrates old CONFIG#webhook."""
 
-    def test_returns_config_from_ddb(self, mock_dynamodb):
+    def test_returns_config_from_new_format(self, mock_dynamodb):
+        """New format: SK=webhooks with items list."""
         mock_dynamodb.get_item.return_value = {
-            'Item': {'PK': 'CONFIG', 'SK': 'webhook', 'url': 'https://hook.example.com', 'type': 'dingtalk'}
+            'Item': {'PK': 'CONFIG', 'SK': 'webhooks', 'items': [
+                {'name': 'dingtalk', 'url': 'https://hook.example.com', 'type': 'dingtalk'}
+            ]}
         }
         from common.config import get_webhook_config
-        url, wtype = get_webhook_config()
-        assert url == 'https://hook.example.com'
-        assert wtype == 'dingtalk'
+        result = get_webhook_config()
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]['url'] == 'https://hook.example.com'
+        assert result[0]['type'] == 'dingtalk'
 
-    def test_returns_defaults_when_no_config(self, mock_dynamodb):
+    def test_returns_empty_list_when_no_config(self, mock_dynamodb):
         mock_dynamodb.get_item.return_value = {}
         from common.config import get_webhook_config
-        url, wtype = get_webhook_config()
-        assert url == ''
-        assert wtype == 'feishu'
+        result = get_webhook_config()
+        assert result == []
 
-    def test_returns_defaults_for_missing_fields(self, mock_dynamodb):
+    def test_migrates_old_format(self, mock_dynamodb):
+        """Old format SK=webhook auto-migrates to new format."""
+        # First call for 'webhooks' returns nothing, second for 'webhook' returns old format
+        mock_dynamodb.get_item.side_effect = [
+            {},  # SK=webhooks not found
+            {'Item': {'PK': 'CONFIG', 'SK': 'webhook', 'url': 'https://old.com', 'type': 'feishu'}},
+        ]
+        from common.config import get_webhook_config
+        result = get_webhook_config()
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]['url'] == 'https://old.com'
+        # Should have written the new format
+        mock_dynamodb.put_item.assert_called()
+
+    def test_returns_multiple_webhooks(self, mock_dynamodb):
         mock_dynamodb.get_item.return_value = {
-            'Item': {'PK': 'CONFIG', 'SK': 'webhook'}
+            'Item': {'PK': 'CONFIG', 'SK': 'webhooks', 'items': [
+                {'name': '飞书', 'url': 'https://feishu.com/hook', 'type': 'feishu'},
+                {'name': '钉钉', 'url': 'https://dingtalk.com/hook', 'type': 'dingtalk'},
+            ]}
         }
         from common.config import get_webhook_config
-        url, wtype = get_webhook_config()
-        assert url == ''
-        assert wtype == 'feishu'
+        result = get_webhook_config()
+        assert len(result) == 2
+        assert result[0]['type'] == 'feishu'
+        assert result[1]['type'] == 'dingtalk'
 
 
 class TestGetReconcileDates:

@@ -78,21 +78,21 @@ class TestShouldSuppress:
         """5min alerts should never be suppressed regardless of state."""
         now = datetime(2024, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
         with patch('monitor.handler.get_alert_state', return_value='anything'):
-            result = should_suppress('5min', now, 'http://hook', 'feishu')
+            result = should_suppress('5min', now, [{'url': 'http://hook', 'type': 'feishu'}])
         assert result is False
 
     def test_daily_suppressed_if_already_alerted_today(self):
         """Daily alert suppressed if already alerted today."""
         now = datetime(2024, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
         with patch('monitor.handler.get_alert_state', return_value='2024-07-01'):
-            result = should_suppress('daily', now, 'http://hook', 'feishu')
+            result = should_suppress('daily', now, [{'url': 'http://hook', 'type': 'feishu'}])
         assert result is True
 
     def test_daily_not_suppressed_if_alerted_yesterday(self):
         """Daily alert not suppressed if last alert was yesterday."""
         now = datetime(2024, 7, 2, 12, 0, 0, tzinfo=timezone.utc)
         with patch('monitor.handler.get_alert_state', return_value='2024-07-01'):
-            result = should_suppress('daily', now, 'http://hook', 'feishu')
+            result = should_suppress('daily', now, [{'url': 'http://hook', 'type': 'feishu'}])
         assert result is False
 
     def test_15min_suppressed_within_window(self):
@@ -101,7 +101,7 @@ class TestShouldSuppress:
         # 5 minutes ago
         last_alert = str((now - timedelta(minutes=5)).timestamp())
         with patch('monitor.handler.get_alert_state', return_value=last_alert):
-            result = should_suppress('15min', now, 'http://hook', 'feishu')
+            result = should_suppress('15min', now, [{'url': 'http://hook', 'type': 'feishu'}])
         assert result is True
 
     def test_15min_not_suppressed_outside_window(self):
@@ -110,22 +110,22 @@ class TestShouldSuppress:
         # 20 minutes ago
         last_alert = str((now - timedelta(minutes=20)).timestamp())
         with patch('monitor.handler.get_alert_state', return_value=last_alert):
-            result = should_suppress('15min', now, 'http://hook', 'feishu')
+            result = should_suppress('15min', now, [{'url': 'http://hook', 'type': 'feishu'}])
         assert result is False
 
     def test_no_prior_state_not_suppressed(self):
         """No prior alert state means not suppressed."""
         now = datetime(2024, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
         with patch('monitor.handler.get_alert_state', return_value=None):
-            result = should_suppress('daily', now, 'http://hook', 'feishu')
+            result = should_suppress('daily', now, [{'url': 'http://hook', 'type': 'feishu'}])
         assert result is False
 
     def test_corrupted_state_sends_alert_and_not_suppressed(self):
         """Corrupted state data should send a warning and not suppress."""
         now = datetime(2024, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
         with patch('monitor.handler.get_alert_state', return_value='not-a-timestamp'), \
-             patch('monitor.handler.send_webhook') as mock_send:
-            result = should_suppress('15min', now, 'http://hook', 'feishu')
+             patch('monitor.handler.send_webhook_all') as mock_send:
+            result = should_suppress('15min', now, [{'url': 'http://hook', 'type': 'feishu'}])
         assert result is False
         mock_send.assert_called_once()
         assert '损坏' in mock_send.call_args[0][0]
@@ -170,18 +170,18 @@ class TestHandlerAlerts:
         """Set up common mocks for handler tests."""
         with patch('monitor.handler.get_thresholds', return_value={'5min': 1000, '15min': 5000, 'daily': 10000}), \
              patch('monitor.handler.get_regions', return_value=['us-east-1', 'us-west-2']), \
-             patch('monitor.handler.get_webhook_config', return_value=('https://hook.example.com', 'feishu')), \
+             patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook.example.com', 'type': 'feishu'}]), \
              patch('monitor.handler.put_item') as mock_put, \
              patch('monitor.handler.fetch_region') as mock_fetch, \
              patch('monitor.handler.fetch_detail', return_value={}) as mock_detail, \
-             patch('monitor.handler.send_webhook') as mock_send, \
+             patch('monitor.handler.send_webhook_all') as mock_send, \
              patch('monitor.handler.get_alert_state', return_value=None), \
              patch('monitor.handler.set_alert_state'):
             yield {
                 'put_item': mock_put,
                 'fetch_region': mock_fetch,
                 'fetch_detail': mock_detail,
-                'send_webhook': mock_send,
+                'send_webhook_all': mock_send,
             }
 
     def test_no_alert_when_under_all_thresholds(self, mock_env):
@@ -192,7 +192,7 @@ class TestHandlerAlerts:
         result = handler({}, None)
         assert result['statusCode'] == 200
         assert result['alerts'] == []
-        mock_env['send_webhook'].assert_not_called()
+        mock_env['send_webhook_all'].assert_not_called()
 
     def test_alert_triggered_when_5min_exceeds_threshold(self, mock_env):
         mock_env['fetch_region'].return_value = {
@@ -202,7 +202,7 @@ class TestHandlerAlerts:
         result = handler({}, None)
         # 2 regions × 600 = 1200 > 1000 threshold
         assert '5min' in result['alerts']
-        mock_env['send_webhook'].assert_called()
+        mock_env['send_webhook_all'].assert_called()
 
     def test_multi_region_failure_sends_alert(self, mock_env):
         """When >3 regions fail, a failure alert is sent."""
@@ -212,15 +212,15 @@ class TestHandlerAlerts:
             result = handler({}, None)
 
         # Should have sent a failure alert
-        calls = mock_env['send_webhook'].call_args_list
+        calls = mock_env['send_webhook_all'].call_args_list
         failure_alerts = [c for c in calls if '查询失败' in c[0][0]]
         assert len(failure_alerts) >= 1
 
     def test_threshold_read_failure_sends_alert(self):
         """When threshold read fails, an alert is sent and handler returns 500."""
         with patch('monitor.handler.get_thresholds', side_effect=Exception("DDB timeout")), \
-             patch('monitor.handler.get_webhook_config', return_value=('https://hook', 'feishu')), \
-             patch('monitor.handler.send_webhook') as mock_send:
+             patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook', 'type': 'feishu'}]), \
+             patch('monitor.handler.send_webhook_all') as mock_send:
             from monitor.handler import handler
             result = handler({}, None)
         assert result['statusCode'] == 500
@@ -230,8 +230,8 @@ class TestHandlerAlerts:
         """When no regions configured, sends alert and returns 500."""
         with patch('monitor.handler.get_thresholds', return_value={'5min': 1000, '15min': 5000, 'daily': 10000}), \
              patch('monitor.handler.get_regions', return_value=[]), \
-             patch('monitor.handler.get_webhook_config', return_value=('https://hook', 'feishu')), \
-             patch('monitor.handler.send_webhook') as mock_send:
+             patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook', 'type': 'feishu'}]), \
+             patch('monitor.handler.send_webhook_all') as mock_send:
             from monitor.handler import handler
             result = handler({}, None)
         assert result['statusCode'] == 500

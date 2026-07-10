@@ -166,13 +166,10 @@ tr:hover { background: #f0f4ff; }
   <div id="regions-msg"></div>
 
   <h3 style="margin-top:24px">Webhook 通知</h3>
-  <div style="display:flex;gap:12px;margin:12px 0">
-    <div class="form-group"><label>URL</label><input id="wh-url" style="width:400px"></div>
-    <div class="form-group"><label>渠道</label>
-      <select id="wh-type"><option value="feishu">飞书</option><option value="dingtalk">钉钉</option><option value="wecom">企业微信</option></select>
-    </div>
-  </div>
-  <button class="btn" onclick="saveWebhook()">保存 Webhook</button>
+  <p style="color:#666;font-size:13px;margin:4px 0 12px">支持配置多个推送渠道，如同时推送飞书和钉钉</p>
+  <div id="webhook-list"></div>
+  <button class="btn" onclick="addWebhookRow()" style="background:#6c757d;margin-top:8px">+ 添加渠道</button>
+  <button class="btn" onclick="saveWebhook()" style="margin-top:8px">保存 Webhook</button>
   <div id="wh-msg"></div>
 </div>
 </div>
@@ -486,14 +483,64 @@ async function saveRegions() {
 
 async function loadWebhook() {
   const data = await (await fetch(`${API}/api/config/webhook`)).json();
-  document.getElementById('wh-url').value = data.url || '';
-  document.getElementById('wh-type').value = data.type || 'feishu';
+  const list = Array.isArray(data) ? data : [];
+  renderWebhookList(list);
+}
+
+function renderWebhookList(items) {
+  const container = document.getElementById('webhook-list');
+  if (!items.length) {
+    container.innerHTML = '<p style="color:#999;font-size:13px">暂无配置，点击"添加渠道"开始</p>';
+    return;
+  }
+  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+  container.innerHTML = items.map((item, i) => `
+    <div style="display:flex;gap:8px;align-items:center;margin:8px 0;padding:8px 12px;background:#f8f9fa;border-radius:6px" data-wh-idx="${i}">
+      <div class="form-group" style="margin:0"><label style="font-size:11px">名称</label><input class="wh-name" value="${esc(item.name || item.type || 'feishu')}" style="width:100px"></div>
+      <div class="form-group" style="margin:0"><label style="font-size:11px">渠道</label>
+        <select class="wh-type">
+          <option value="feishu"${item.type==='feishu'?' selected':''}>飞书</option>
+          <option value="dingtalk"${item.type==='dingtalk'?' selected':''}>钉钉</option>
+          <option value="wecom"${item.type==='wecom'?' selected':''}>企业微信</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin:0;flex:1"><label style="font-size:11px">URL</label><input class="wh-url" value="${esc(item.url)}" style="width:100%"></div>
+      <button onclick="removeWebhookRow(${i})" style="background:none;border:none;color:#dc3545;cursor:pointer;font-size:18px;padding:4px 8px" title="删除">✕</button>
+    </div>
+  `).join('');
+}
+
+function addWebhookRow() {
+  const container = document.getElementById('webhook-list');
+  const items = collectWebhookItems();
+  items.push({name: '', url: '', type: 'feishu'});
+  renderWebhookList(items);
+}
+
+function removeWebhookRow(idx) {
+  const items = collectWebhookItems();
+  items.splice(idx, 1);
+  renderWebhookList(items);
+}
+
+function collectWebhookItems() {
+  const rows = document.querySelectorAll('[data-wh-idx]');
+  const items = [];
+  rows.forEach(row => {
+    items.push({
+      name: row.querySelector('.wh-name').value.trim(),
+      url: row.querySelector('.wh-url').value.trim(),
+      type: row.querySelector('.wh-type').value,
+    });
+  });
+  return items;
 }
 
 async function saveWebhook() {
+  const items = collectWebhookItems().filter(i => i.url);
   await fetch(`${API}/api/config/webhook`, {method:'PUT', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({url: document.getElementById('wh-url').value, type: document.getElementById('wh-type').value})});
-  document.getElementById('wh-msg').innerHTML = '<div class="msg">已保存</div>';
+    body: JSON.stringify(items)});
+  document.getElementById('wh-msg').innerHTML = `<div class="msg">已保存 ${items.length} 个渠道</div>`;
   setTimeout(() => document.getElementById('wh-msg').innerHTML = '', 2000);
 }
 

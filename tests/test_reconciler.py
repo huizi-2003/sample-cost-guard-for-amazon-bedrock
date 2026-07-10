@@ -377,11 +377,11 @@ from datetime import datetime, timezone, timedelta
 from reconciler.handler import handler
 
 
-@patch('reconciler.handler.send_webhook')
+@patch('reconciler.handler.send_webhook_all')
 @patch('reconciler.handler.save_reconcile_record')
 @patch('reconciler.handler.get_cloudwatch_token_total', return_value=(0, [], {}))
 @patch('reconciler.handler.get_cost_explorer_data', return_value=[])
-@patch('reconciler.handler.get_webhook_config', return_value=('', 'feishu'))
+@patch('reconciler.handler.get_webhook_config', return_value=[])
 def test_valid_historical_date_sets_correct_dates(
     mock_webhook_config, mock_ce, mock_cw, mock_save, mock_send
 ):
@@ -394,11 +394,11 @@ def test_valid_historical_date_sets_correct_dates(
     assert result['date'] == '2024-06-15'
 
 
-@patch('reconciler.handler.send_webhook')
+@patch('reconciler.handler.send_webhook_all')
 @patch('reconciler.handler.save_reconcile_record')
 @patch('reconciler.handler.get_cloudwatch_token_total', return_value=(0, [], {}))
 @patch('reconciler.handler.get_cost_explorer_data', return_value=[])
-@patch('reconciler.handler.get_webhook_config', return_value=('', 'feishu'))
+@patch('reconciler.handler.get_webhook_config', return_value=[])
 def test_missing_date_falls_back_to_t_minus_2(
     mock_webhook_config, mock_ce, mock_cw, mock_save, mock_send
 ):
@@ -413,7 +413,7 @@ def test_missing_date_falls_back_to_t_minus_2(
     assert result['dates'][0] == expected_date
 
 
-@patch('reconciler.handler.get_webhook_config', return_value=('', 'feishu'))
+@patch('reconciler.handler.get_webhook_config', return_value=[])
 def test_invalid_format_month_13_returns_400(mock_webhook_config):
     """**Validates: Requirements 7.2**
 
@@ -424,7 +424,7 @@ def test_invalid_format_month_13_returns_400(mock_webhook_config):
     assert 'Invalid date format' in result['error']
 
 
-@patch('reconciler.handler.get_webhook_config', return_value=('', 'feishu'))
+@patch('reconciler.handler.get_webhook_config', return_value=[])
 def test_invalid_format_not_a_date_returns_400(mock_webhook_config):
     """**Validates: Requirements 7.2**
 
@@ -435,7 +435,7 @@ def test_invalid_format_not_a_date_returns_400(mock_webhook_config):
     assert 'Invalid date format' in result['error']
 
 
-@patch('reconciler.handler.get_webhook_config', return_value=('', 'feishu'))
+@patch('reconciler.handler.get_webhook_config', return_value=[])
 def test_future_date_returns_400(mock_webhook_config):
     """**Validates: Requirements 7.2**
 
@@ -447,7 +447,7 @@ def test_future_date_returns_400(mock_webhook_config):
     assert 'Date must be before today' in result['error']
 
 
-@patch('reconciler.handler.get_webhook_config', return_value=('', 'feishu'))
+@patch('reconciler.handler.get_webhook_config', return_value=[])
 def test_today_date_returns_400(mock_webhook_config):
     """**Validates: Requirements 7.2**
 
@@ -459,7 +459,7 @@ def test_today_date_returns_400(mock_webhook_config):
     assert 'Date must be before today' in result['error']
 
 
-@patch('reconciler.handler.get_webhook_config', return_value=('', 'feishu'))
+@patch('reconciler.handler.get_webhook_config', return_value=[])
 def test_nonexistent_calendar_date_returns_400(mock_webhook_config):
     """**Validates: Requirements 7.2**
 

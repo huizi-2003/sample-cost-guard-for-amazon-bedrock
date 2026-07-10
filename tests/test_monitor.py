@@ -13,7 +13,7 @@ from unittest.mock import patch, MagicMock
 MOCK_PATCHES = {
     'monitor.handler.get_thresholds': {'5min': 999999999, '15min': 999999999, 'daily': 999999999},
     'monitor.handler.get_regions': ['us-east-1'],
-    'monitor.handler.get_webhook_config': ('', 'feishu'),
+    'monitor.handler.get_webhook_config': [],
 }
 
 
@@ -25,13 +25,13 @@ def mock_env():
          patch('monitor.handler.get_webhook_config', return_value=MOCK_PATCHES['monitor.handler.get_webhook_config']), \
          patch('monitor.handler.put_item') as mock_put_item, \
          patch('monitor.handler.fetch_region') as mock_fetch_region, \
-         patch('monitor.handler.send_webhook') as mock_send_webhook, \
+         patch('monitor.handler.send_webhook_all') as mock_send_webhook, \
          patch('monitor.handler.get_alert_state', return_value=None), \
          patch('monitor.handler.set_alert_state'):
         yield {
             'put_item': mock_put_item,
             'fetch_region': mock_fetch_region,
-            'send_webhook': mock_send_webhook,
+            'send_webhook_all': mock_send_webhook,
         }
 
 
@@ -101,4 +101,4 @@ class TestMonitorPersistence:
         # Alert should have been triggered (5min total > threshold of 100)
         assert '5min' in result['alerts']
         # Webhook should have been called for the alert
-        mock_env['send_webhook'].assert_called()
+        mock_env['send_webhook_all'].assert_called()

@@ -40,13 +40,12 @@ def _check_response(body, webhook_type):
 
 
 def send_webhook(message, webhook_url, webhook_type='feishu'):
-    """发送 webhook 通知，根据 DDB 中配置的渠道类型选择对应格式。
+    """发送单个 webhook 通知，根据渠道类型选择对应格式。
 
     Args:
         message: 通知文本内容
-        webhook_url: webhook 地址（来自 DDB CONFIG#webhook 的 url 字段）
-        webhook_type: 渠道类型（来自 DDB CONFIG#webhook 的 type 字段），
-                      支持 feishu / dingtalk / wecom
+        webhook_url: webhook 地址
+        webhook_type: 渠道类型，支持 feishu / dingtalk / wecom
     """
     if not webhook_url:
         logger.warning("No webhook URL configured, skipping notification")
@@ -65,3 +64,33 @@ def send_webhook(message, webhook_url, webhook_type='feishu'):
             logger.error(f"Webhook attempt {attempt + 1} failed: {e}")
             if attempt == 0:
                 time.sleep(1)
+
+
+def send_webhook_all(message, webhooks):
+    """向所有已配置的 webhook 渠道发送通知。
+
+    兼容三种场景：
+      - 无配置（空列表）：跳过，仅打日志
+      - 单配置：发一个
+      - 多配置：逐个发送，某个失败不影响其他
+
+    Args:
+        message: 通知文本内容
+        webhooks: list[dict]，每个 dict 含 url/type 字段（来自 get_webhook_config()）
+    """
+    if not webhooks:
+        logger.warning("No webhook configured, skipping notification")
+        return
+
+    for wh in webhooks:
+        url = wh.get('url', '')
+        wh_type = wh.get('type', 'feishu')
+        name = wh.get('name', wh_type)
+        if not url:
+            logger.warning(f"Webhook '{name}' has no URL, skipping")
+            continue
+        try:
+            send_webhook(message, url, wh_type)
+            logger.info(f"Webhook '{name}' ({wh_type}) sent successfully")
+        except Exception as e:
+            logger.error(f"Webhook '{name}' ({wh_type}) failed: {e}")

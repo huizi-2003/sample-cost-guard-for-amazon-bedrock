@@ -275,33 +275,36 @@ class TestConfigWebhook:
     """Configuration API for webhook settings."""
 
     @pytest.mark.anyio
-    @patch('web.app.get_item')
+    @patch('web.app.get_webhook_config')
     async def test_get_webhook(self, mock_get, client):
-        mock_get.return_value = {'url': 'https://hook.example.com', 'type': 'dingtalk'}
+        mock_get.return_value = [{'name': 'dingtalk', 'url': 'https://hook.example.com', 'type': 'dingtalk'}]
         resp = await client.get('/api/config/webhook')
         assert resp.status_code == 200
         data = resp.json()
-        assert data['url'] == 'https://hook.example.com'
-        assert data['type'] == 'dingtalk'
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]['url'] == 'https://hook.example.com'
+        assert data[0]['type'] == 'dingtalk'
 
     @pytest.mark.anyio
-    @patch('web.app.get_item')
+    @patch('web.app.get_webhook_config')
     async def test_get_webhook_no_config(self, mock_get, client):
-        mock_get.return_value = None
+        mock_get.return_value = []
         resp = await client.get('/api/config/webhook')
         assert resp.status_code == 200
         data = resp.json()
-        assert data['url'] == ''
-        assert data['type'] == 'feishu'
+        assert data == []
 
     @pytest.mark.anyio
-    @patch('web.app.put_item')
-    async def test_put_webhook(self, mock_put, client):
+    @patch('web.app.save_webhook_config')
+    async def test_put_webhook(self, mock_save, client):
         resp = await client.put('/api/config/webhook',
-                               json={'url': 'https://new-hook.example.com', 'type': 'wecom'})
+                               json=[{'name': '企微', 'url': 'https://new-hook.example.com', 'type': 'wecom'}])
         assert resp.status_code == 200
-        mock_put.assert_called_once_with('CONFIG', 'webhook',
-                                         url='https://new-hook.example.com', type='wecom')
+        data = resp.json()
+        assert data['ok'] is True
+        assert data['count'] == 1
+        mock_save.assert_called_once_with([{'name': '企微', 'url': 'https://new-hook.example.com', 'type': 'wecom'}])
 
 
 # === POST /api/backfill (extended) ===

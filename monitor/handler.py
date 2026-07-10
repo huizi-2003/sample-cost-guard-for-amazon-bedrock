@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
 from common.config import get_thresholds, get_regions, get_alert_state, set_alert_state, get_webhook_config, put_item
-from common.webhook import send_webhook
+from common.webhook import send_webhook_all
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -80,7 +80,7 @@ def fetch_detail(region, start, end):
     return models
 
 
-def should_suppress(window, now, webhook_url, webhook_type):
+def should_suppress(window, now, webhooks):
     if window == '5min':
         return False
     val = get_alert_state(window)
@@ -93,7 +93,7 @@ def should_suppress(window, now, webhook_url, webhook_type):
         elif window == '15min':
             return (now.timestamp() - float(val)) < 900
     except (ValueError, TypeError):
-        send_webhook(f"[Bedrock 监控] {window} 的提醒状态数据损坏，请检查。", webhook_url, webhook_type)
+        send_webhook_all(f"[Bedrock 监控] {window} 的提醒状态数据损坏，请检查。", webhooks)
         return False
     return False
 
@@ -111,18 +111,18 @@ def handler(event, context):
     start_15min = now - timedelta(minutes=15)
     start_5min = now - timedelta(minutes=5)
 
-    webhook_url, webhook_type = get_webhook_config()
+    webhooks = get_webhook_config()
 
     try:
         thresholds = get_thresholds()
     except Exception as e:
         logger.error(f"Failed to read thresholds from DDB: {e}")
-        send_webhook("[Bedrock 监控] 读取阈值失败，监控未运行。", webhook_url, webhook_type)
+        send_webhook_all("[Bedrock 监控] 读取阈值失败，监控未运行。", webhooks)
         return {'statusCode': 500, 'error': 'threshold_read_failed'}
 
     regions = get_regions()
     if not regions:
-        send_webhook("[Bedrock 监控] DDB 中未配置监控 Region。", webhook_url, webhook_type)
+        send_webhook_all("[Bedrock 监控] DDB 中未配置监控 Region。", webhooks)
         return {'statusCode': 500, 'error': 'no_regions'}
 
     region_results = []
@@ -138,7 +138,7 @@ def handler(event, context):
                 failed_regions.append(region)
 
     if len(failed_regions) > 3:
-        send_webhook(f"[Bedrock 监控] 异常：{len(failed_regions)} 个 Region 查询失败: {', '.join(failed_regions[:10])}", webhook_url, webhook_type)
+        send_webhook_all(f"[Bedrock 监控] 异常：{len(failed_regions)} 个 Region 查询失败: {', '.join(failed_regions[:10])}", webhooks)
 
     total_5min = sum(r['5min'] for r in region_results)
     total_15min = sum(r['15min'] for r in region_results)
@@ -189,7 +189,7 @@ def handler(event, context):
         alerts.append({'window': 'daily', 'total': total_daily, 'threshold': thresholds['daily']})
 
     if alerts:
-        alerts = [a for a in alerts if not should_suppress(a['window'], now, webhook_url, webhook_type)]
+        alerts = [a for a in alerts if not should_suppress(a['window'], now, webhooks)]
 
     if alerts:
         alert = alerts[0]
@@ -221,7 +221,7 @@ def handler(event, context):
             for label, val in top_models:
                 msg += f"  {label}: {val:,.0f}\n"
 
-        send_webhook(msg, webhook_url, webhook_type)
+        send_webhook_all(msg, webhooks)
         for a in alerts:
             mark_alerted(a['window'], now)
         logger.warning(f"ALERT: {msg}")

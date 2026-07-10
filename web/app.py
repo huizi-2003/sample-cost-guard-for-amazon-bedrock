@@ -16,7 +16,8 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from common.config import (
     get_thresholds, get_regions, get_reconcile_by_date,
-    get_reconcile_dates, put_item, get_item, query_by_pk
+    get_reconcile_dates, put_item, get_item, query_by_pk,
+    get_webhook_config, save_webhook_config
 )
 
 CW_TIMEOUT = BotoConfig(connect_timeout=10, read_timeout=30, retries={'max_attempts': 1})
@@ -337,15 +338,25 @@ async def put_config_thresholds(request: Request):
 
 @app.get('/api/config/webhook')
 async def get_config_webhook():
-    item = get_item('CONFIG', 'webhook')
-    return item or {'url': '', 'type': 'feishu'}
+    """获取所有 webhook 配置（兼容旧单条格式）"""
+    return get_webhook_config()
 
 
 @app.put('/api/config/webhook')
 async def put_config_webhook(request: Request):
+    """保存全部 webhook 配置（接收列表）"""
     data = await request.json()
-    put_item('CONFIG', 'webhook', url=data.get('url', ''), type=data.get('type', 'feishu'))
-    return {'ok': True}
+    items = data if isinstance(data, list) else data.get('items', [])
+    # 校验每项必须有 url 和 type
+    cleaned = []
+    for item in items:
+        url = item.get('url', '').strip()
+        wh_type = item.get('type', 'feishu')
+        name = item.get('name', wh_type).strip() or wh_type
+        if url:  # 忽略空 URL 的条目
+            cleaned.append({'name': name, 'url': url, 'type': wh_type})
+    save_webhook_config(cleaned)
+    return {'ok': True, 'count': len(cleaned)}
 
 
 # ===== 回填 =====

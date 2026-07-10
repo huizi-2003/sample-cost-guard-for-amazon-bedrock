@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
 from common.config import save_reconcile_record, get_webhook_config
-from common.webhook import send_webhook
+from common.webhook import send_webhook_all
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -412,7 +412,7 @@ def reconcile_one(start_date, end_date, now):
 
 def handler(event, context):
     now = datetime.now(timezone.utc)
-    webhook_url, webhook_type = get_webhook_config()
+    webhooks = get_webhook_config()
 
     override_date = event.get('date')
     if override_date:
@@ -427,9 +427,9 @@ def handler(event, context):
         end_date = (parsed + timedelta(days=1)).strftime('%Y-%m-%d')
         r = reconcile_one(start_date, end_date, now)
         if r.get('ce_error'):
-            send_webhook(f"[Bedrock 对账] Cost Explorer 查询失败: {r['ce_error']}", webhook_url, webhook_type)
+            send_webhook_all(f"[Bedrock 对账] Cost Explorer 查询失败: {r['ce_error']}", webhooks)
             return {'statusCode': 500, 'error': 'ce_failed'}
-        send_webhook(f"[Bedrock 日报] {start_date}\n\n{r['msg']}", webhook_url, webhook_type)
+        send_webhook_all(f"[Bedrock 日报] {start_date}\n\n{r['msg']}", webhooks)
         logger.info(r['msg'])
         return {'statusCode': 200, 'date': start_date, 'total_actual': r['total_actual'], 'reconcile_diff_pct': r['reconcile_diff_pct']}
 
@@ -452,6 +452,6 @@ def handler(event, context):
         else:
             combined += r['msg']
 
-    send_webhook(combined, webhook_url, webhook_type)
+    send_webhook_all(combined, webhooks)
     logger.info(combined)
     return {'statusCode': 200, 'dates': dates}
