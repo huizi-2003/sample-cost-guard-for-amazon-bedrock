@@ -313,7 +313,7 @@ function renderOverview(data) {
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: true, position: 'bottom', labels: { boxWidth: 12, padding: 12 } },
-        title: { display: true, text: '近 7 天日费用趋势', font: { size: 15 }, color: '#1a1a2e' },
+        title: { display: true, text: '本月日费用趋势', font: { size: 15 }, color: '#1a1a2e' },
         tooltip: { callbacks: { label: (item) => item.dataset.label + ': $' + item.parsed.y.toFixed(2) } },
       },
       scales: {
@@ -337,7 +337,7 @@ function renderOverview(data) {
       maintainAspectRatio: false,
       plugins: {
         legend: { display: false },
-        title: { display: true, text: 'Top 5 模型费用排名', font: { size: 14 }, color: '#1a1a2e' },
+        title: { display: true, text: '本月 Top 5 模型费用', font: { size: 14 }, color: '#1a1a2e' },
         tooltip: { callbacks: { label: (item) => '$' + item.raw.toFixed(2) } },
       },
       scales: {
