@@ -344,7 +344,7 @@ async def get_config_webhook():
 
 @app.put('/api/config/webhook')
 async def put_config_webhook(request: Request):
-    """保存全部 webhook 配置（接收列表）"""
+    """保存全部 webhook 配置（接收列表，最多 3 个）"""
     data = await request.json()
     items = data if isinstance(data, list) else data.get('items', [])
     # 校验每项必须有 url 和 type
@@ -355,6 +355,8 @@ async def put_config_webhook(request: Request):
         name = item.get('name', wh_type).strip() or wh_type
         if url:  # 忽略空 URL 的条目
             cleaned.append({'name': name, 'url': url, 'type': wh_type})
+    if len(cleaned) > 3:
+        return JSONResponse({'error': '最多配置 3 个 Webhook 渠道'}, status_code=400)
     save_webhook_config(cleaned)
     return {'ok': True, 'count': len(cleaned)}
 

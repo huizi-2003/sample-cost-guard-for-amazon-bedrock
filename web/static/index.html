@@ -511,8 +511,8 @@ function renderWebhookList(items) {
 }
 
 function addWebhookRow() {
-  const container = document.getElementById('webhook-list');
   const items = collectWebhookItems();
+  if (items.length >= 3) { alert('最多配置 3 个渠道'); return; }
   items.push({name: '', url: '', type: 'feishu'});
   renderWebhookList(items);
 }
