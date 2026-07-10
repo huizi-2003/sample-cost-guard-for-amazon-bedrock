@@ -28,8 +28,16 @@ def put_item(pk, sk, **attrs):
 
 
 def query_by_pk(pk):
-    resp = _get_table().query(KeyConditionExpression=Key('PK').eq(pk))
-    return resp.get('Items', [])
+    table = _get_table()
+    all_items = []
+    kwargs = {'KeyConditionExpression': Key('PK').eq(pk)}
+    while True:
+        resp = table.query(**kwargs)
+        all_items.extend(resp.get('Items', []))
+        if 'LastEvaluatedKey' not in resp:
+            break
+        kwargs['ExclusiveStartKey'] = resp['LastEvaluatedKey']
+    return all_items
 
 
 def get_thresholds():

@@ -542,6 +542,16 @@ async def get_config_thresholds():
 @app.put('/api/config/thresholds')
 async def put_config_thresholds(request: Request):
     data = await request.json()
+    valid_keys = {'5min', '15min', 'daily'}
+    for key, val in data.items():
+        if key not in valid_keys:
+            return JSONResponse({'error': f'Invalid key: {key}, must be one of {valid_keys}'}, status_code=400)
+        try:
+            int_val = int(val)
+        except (ValueError, TypeError):
+            return JSONResponse({'error': f'Invalid value for {key}: must be integer'}, status_code=400)
+        if int_val < 0:
+            return JSONResponse({'error': f'Invalid value for {key}: must be non-negative'}, status_code=400)
     for key, val in data.items():
         put_item('THRESHOLD', key, value=int(val))
     return {'ok': True}
