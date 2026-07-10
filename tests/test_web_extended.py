@@ -5,7 +5,6 @@ Covers:
 - GET /api/reconcile/dates: date listing
 - GET /api/reconcile/{date}: per-date detail
 - GET /api/monitor/{date}/models: DDB cache and CW fallback
-- GET /api/monitor/{date}/yesterday: previous day data
 - GET/PUT /api/config/*: configuration CRUD
 - _extract_routing: routing classification logic
 - POST /api/backfill: valid range triggering
@@ -195,29 +194,6 @@ class TestMonitorModels:
     @pytest.mark.anyio
     async def test_future_date_returns_400(self, client):
         resp = await client.get('/api/monitor/2099-12-31/models')
-        assert resp.status_code == 400
-
-
-# === GET /api/monitor/{date}/yesterday ===
-
-
-class TestMonitorYesterday:
-    """GET /api/monitor/{date}/yesterday: returns previous day data."""
-
-    @pytest.mark.anyio
-    @patch('web.app.query_by_pk')
-    async def test_returns_yesterday_data(self, mock_query, client):
-        mock_query.return_value = [
-            {'SK': 'T#10:00', 'models': {'model-a': 500}},
-        ]
-        resp = await client.get('/api/monitor/2024-07-02/yesterday')
-        assert resp.status_code == 200
-        # Should query for 2024-07-01
-        mock_query.assert_called_with('MONITOR#2024-07-01')
-
-    @pytest.mark.anyio
-    async def test_invalid_date_returns_400(self, client):
-        resp = await client.get('/api/monitor/bad-date/yesterday')
         assert resp.status_code == 400
 
 

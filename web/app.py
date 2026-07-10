@@ -295,24 +295,6 @@ def _fetch_models_from_cw(date):
     return result
 
 
-@app.get('/api/monitor/{date}/yesterday')
-async def monitor_yesterday(date: str):
-    """返回前一天的模型级监控数据，用于对比线展示。"""
-    if not re.match(r'^\d{4}-\d{2}-\d{2}$', date):
-        return JSONResponse({'error': 'Invalid date format'}, status_code=400)
-
-    try:
-        parsed = datetime.strptime(date, '%Y-%m-%d')
-    except ValueError:
-        return JSONResponse({'error': 'Invalid date'}, status_code=400)
-
-    yesterday = (parsed - timedelta(days=1)).strftime('%Y-%m-%d')
-    utc_today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    if yesterday > utc_today:
-        return {}
-
-    # 复用 monitor_models 的逻辑
-    return await monitor_models(yesterday)
 
 
 # ===== 今日成本估算 =====

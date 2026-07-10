@@ -49,10 +49,6 @@ tr:hover { background: #f0f4ff; }
 .chart-row { display: flex; gap: 24px; margin-top: 24px; }
 .chart-row > div { flex: 1; min-width: 0; position: relative; }
 
-/* Alert bar */
-.alert-bar { background: #e63946; color: #fff; padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-weight: 500; display: none; }
-.alert-bar.visible { display: block; }
-
 /* Overview summary cards */
 .overview-cards { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
 .overview-cards .card { background: #fff; border: 1px solid #e8eaf0; padding: 20px 24px; border-radius: 10px; flex: 1; min-width: 180px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
@@ -134,7 +130,6 @@ tr:hover { background: #f0f4ff; }
 
 <!-- Tab 3: 今日监控 -->
 <div id="monitor" class="panel">
-  <div id="monitor-alert" class="alert-bar"></div>
   <div style="font-size:12px; color:#999; margin-bottom:8px;">时间轴为 UTC，数据每 5 分钟更新</div>
   <!-- 预估费用卡片 -->
   <div id="cost-cards" class="summary" style="display:none;">
@@ -658,23 +653,14 @@ async function loadMonitorChart() {
   const utcDate = today.toISOString().slice(0, 10);
 
   try {
-    // Fetch today and yesterday in parallel
-    const [todayResp, yesterdayResp] = await Promise.all([
-      fetch(`${API}/api/monitor/${utcDate}/models`),
-      fetch(`${API}/api/monitor/${utcDate}/yesterday`),
-    ]);
+    const todayResp = await fetch(`${API}/api/monitor/${utcDate}/models`);
     const todayData = await todayResp.json();
-    let yesterdayData = null;
-    if (yesterdayResp.ok) {
-      yesterdayData = await yesterdayResp.json();
-    }
 
     const modelNames = Object.keys(todayData);
     if (modelNames.length === 0) {
       document.getElementById('monitor-empty').style.display = 'block';
       document.getElementById('monitor-chart-container').style.display = 'none';
       document.getElementById('monitor-error').style.display = 'none';
-      document.getElementById('monitor-alert').classList.remove('visible');
       return;
     }
 
@@ -682,46 +668,10 @@ async function loadMonitorChart() {
     document.getElementById('monitor-chart-container').style.display = 'block';
     document.getElementById('monitor-error').style.display = 'none';
 
-    // Check alert condition
-    checkMonitorAlert(todayData, yesterdayData);
-
-    renderModelChart(todayData, yesterdayData);
+    renderModelChart(todayData);
   } catch (e) {
     document.getElementById('monitor-error').style.display = 'block';
     document.getElementById('monitor-error').textContent = '数据加载失败：' + e.message;
-  }
-}
-
-function checkMonitorAlert(todayData, yesterdayData) {
-  const alertEl = document.getElementById('monitor-alert');
-  if (!yesterdayData) { alertEl.classList.remove('visible'); return; }
-
-  // Get today's cumulative total at last time point
-  let todayTotal = 0;
-  const allTodayTimes = new Set();
-  Object.values(todayData).forEach(series => series.forEach(p => allTodayTimes.add(p.time)));
-  const todayLabels = [...allTodayTimes].sort();
-  const lastTodayTime = todayLabels[todayLabels.length - 1];
-
-  if (!lastTodayTime) { alertEl.classList.remove('visible'); return; }
-
-  Object.values(todayData).forEach(series => {
-    const last = series.filter(p => p.time <= lastTodayTime).pop();
-    if (last) todayTotal += last.tokens;
-  });
-
-  // Get yesterday's cumulative total at same time point
-  let yesterdayAtSameTime = 0;
-  Object.values(yesterdayData).forEach(series => {
-    const matching = series.filter(p => p.time <= lastTodayTime).pop();
-    if (matching) yesterdayAtSameTime += matching.tokens;
-  });
-
-  if (yesterdayAtSameTime > 0 && todayTotal > yesterdayAtSameTime * 1.5) {
-    alertEl.textContent = '⚠ 当前用量超昨日同期 50% 以上';
-    alertEl.classList.add('visible');
-  } else {
-    alertEl.classList.remove('visible');
   }
 }
 
@@ -742,7 +692,7 @@ function shortenModelName(name) {
   return name;
 }
 
-function renderModelChart(data, yesterdayData) {
+function renderModelChart(data) {
   const canvas = document.getElementById('monitor-chart');
 
   // Sort by total, take top 6, merge rest
@@ -796,51 +746,6 @@ function renderModelChart(data, yesterdayData) {
       borderWidth: 1,
       fill: true,
       pointRadius: 0,
-    });
-  }
-
-  // Yesterday total as dashed line
-  if (yesterdayData && Object.keys(yesterdayData).length > 0) {
-    // For each model, build a time→cumulative map, then at each time point
-    // use carry-forward (last known value) so missing points don't cause drops.
-    const allYdayTimes = new Set();
-    Object.values(yesterdayData).forEach(series => series.forEach(p => allYdayTimes.add(p.time)));
-    const ydaySortedTimes = [...allYdayTimes].sort();
-
-    // Build per-time total cumulative using carry-forward per model
-    const ydayTimeMap = {};
-    ydaySortedTimes.forEach(t => {
-      let total = 0;
-      Object.values(yesterdayData).forEach(series => {
-        // Find last point at or before time t
-        let lastVal = 0;
-        for (const p of series) {
-          if (p.time <= t) lastVal = p.tokens;
-        }
-        total += lastVal;
-      });
-      ydayTimeMap[t] = total;
-    });
-
-    // Convert to deltas on today's label grid
-    let prevYday = 0;
-    const ydayDeltas = labels.map(t => {
-      const cur = ydayTimeMap[t] !== undefined ? ydayTimeMap[t] : prevYday;
-      const delta = cur - prevYday;
-      prevYday = cur;
-      return delta > 0 ? delta : 0;
-    });
-
-    datasets.push({
-      label: '昨日总量',
-      data: ydayDeltas,
-      borderColor: 'rgba(150,150,150,0.8)',
-      borderWidth: 2,
-      borderDash: [5, 5],
-      backgroundColor: 'transparent',
-      fill: false,
-      pointRadius: 0,
-      stack: 'yesterday',
     });
   }
 
