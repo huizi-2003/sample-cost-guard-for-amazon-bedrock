@@ -75,10 +75,8 @@ tr:hover { background: #f0f4ff; }
 <!-- Tab 1: 费用总览 -->
 <div id="overview" class="panel active">
   <div class="overview-cards" id="overview-cards">
-    <div class="card"><div class="value" id="ov-month-cost">-</div><div class="label" id="ov-month-label">累计费用</div></div>
-    <div class="card"><div class="value" id="ov-yesterday-cost">-</div><div class="label">最近日费用</div></div>
-    <div class="card"><div class="value" id="ov-avg-cost">-</div><div class="label">日均费用</div></div>
-    <div class="card"><div class="value" id="ov-change">-</div><div class="label">日环比变化</div></div>
+    <div class="card"><div class="value" id="ov-month-cost">-</div><div class="label" id="ov-month-label">本月费用</div></div>
+    <div class="card"><div class="value" id="ov-avg-cost">-</div><div class="label">本月日均</div></div>
   </div>
   <div style="position:relative; height:320px; margin-bottom:24px;">
     <canvas id="overview-trend-chart"></canvas>
@@ -234,7 +232,7 @@ function toggleDetail(id) {
 // ===== Tab 1: 费用总览 =====
 async function loadOverview() {
   try {
-    const resp = await fetch(`${API}/api/reconcile/summary?days=7`);
+    const resp = await fetch(`${API}/api/reconcile/summary`);
     const data = await resp.json();
     renderOverview(data);
   } catch (e) {
@@ -245,41 +243,22 @@ async function loadOverview() {
 function renderOverview(data) {
   const days = data.daily_costs || [];
   const validDays = days.filter(d => d.cost > 0);
+  const month = (data.period && data.period.month) || '';
 
   if (validDays.length === 0) {
     document.getElementById('ov-month-cost').textContent = '$0.00';
-    document.getElementById('ov-month-label').textContent = '近 7 天累计';
-    document.getElementById('ov-yesterday-cost').textContent = '$0.00';
+    document.getElementById('ov-month-label').textContent = '本月费用';
     document.getElementById('ov-avg-cost').textContent = '$0.00';
-    document.getElementById('ov-change').textContent = '-';
     return;
   }
 
-  // Summary cards — 全部基于 validDays
+  // Summary cards
   const total = validDays.reduce((s, d) => s + d.cost, 0);
-  const latestDay = validDays[validDays.length - 1];
-  const prevDay = validDays.length >= 2 ? validDays[validDays.length - 2] : null;
-  const yesterday = latestDay.cost;
-  const dayBefore = prevDay ? prevDay.cost : 0;
   const avgCost = total / validDays.length;
-  const changePct = dayBefore > 0 ? ((yesterday - dayBefore) / dayBefore * 100) : 0;
 
   document.getElementById('ov-month-cost').textContent = '$' + total.toFixed(2);
-  document.getElementById('ov-month-label').textContent = '近 7 天累计';
-  document.getElementById('ov-yesterday-cost').textContent = '$' + yesterday.toFixed(2);
+  document.getElementById('ov-month-label').textContent = month ? month + ' 费用' : '本月费用';
   document.getElementById('ov-avg-cost').textContent = '$' + avgCost.toFixed(2);
-
-  const changeEl = document.getElementById('ov-change');
-  const changeLabel = prevDay ? `${prevDay.date.slice(5)} → ${latestDay.date.slice(5)}` : '日环比变化';
-  changeEl.closest('.card').querySelector('.label').textContent = changeLabel;
-  if (dayBefore === 0) {
-    changeEl.textContent = '-';
-    changeEl.className = 'value';
-  } else if (changePct >= 0) {
-    changeEl.innerHTML = `<span class="change-up">▲ ${changePct.toFixed(1)}%</span>`;
-  } else {
-    changeEl.innerHTML = `<span class="change-down">▼ ${Math.abs(changePct).toFixed(1)}%</span>`;
-  }
 
   // Collect model data across all days
   const modelTotals = {};

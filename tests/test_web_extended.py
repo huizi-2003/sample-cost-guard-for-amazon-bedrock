@@ -62,15 +62,19 @@ class TestReconcileSummary:
     @patch('web.app.get_reconcile_by_date')
     @patch('web.app.get_reconcile_dates')
     async def test_summary_with_data(self, mock_dates, mock_detail, client):
-        mock_dates.return_value = ['2024-07-02', '2024-07-01']
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        date1 = now.strftime('%Y-%m-02')
+        date2 = now.strftime('%Y-%m-01')
+        mock_dates.return_value = [date1, date2]
         mock_detail.side_effect = [
-            # 2024-07-02
+            # date1
             {
                 'claude-sonnet-4-cross-region-global': {'actual_cost': '30.0'},
                 'claude-haiku': {'actual_cost': '5.0'},
                 '_summary': {'total_actual': '35.0'},
             },
-            # 2024-07-01
+            # date2
             {
                 'claude-sonnet-4-cross-region-global': {'actual_cost': '25.0'},
                 'claude-haiku': {'actual_cost': '3.0'},
@@ -84,15 +88,11 @@ class TestReconcileSummary:
 
         # Period info
         assert data['period']['days_with_data'] == 2
+        assert data['period']['month'] == now.strftime('%Y-%m')
 
         # Totals
         assert data['totals']['total_cost'] == 63.0
         assert data['totals']['daily_avg'] == 31.5
-        # Yesterday (most recent) = 35.0, day before = 28.0
-        assert data['totals']['yesterday_cost'] == 35.0
-        assert data['totals']['day_before_cost'] == 28.0
-        # MoM = (35 - 28) / 28 * 100 = 25%
-        assert data['totals']['mom_change_pct'] == 25.0
 
         # Model totals sorted by cost descending
         assert data['model_totals'][0]['model'] == 'claude-sonnet-4-cross-region-global'

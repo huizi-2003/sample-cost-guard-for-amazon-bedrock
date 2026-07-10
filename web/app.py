@@ -46,8 +46,15 @@ async def static_files(file_path: str):
 # ===== 对账数据 =====
 
 @app.get('/api/reconcile/summary')
-async def reconcile_summary(days: int = Query(default=30, ge=1, le=365)):
-    dates = get_reconcile_dates(limit=days)
+async def reconcile_summary():
+    """返回本月费用总览（本月1号至今）"""
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1).strftime('%Y-%m-%d')
+
+    dates = get_reconcile_dates(limit=365)
+    # 只保留本月的日期
+    dates = [d for d in dates if d >= month_start]
+
     if not dates:
         return {'period': {}, 'totals': {}, 'daily_costs': [], 'model_totals': [], 'routing_breakdown': []}
 
@@ -75,11 +82,6 @@ async def reconcile_summary(days: int = Query(default=30, ge=1, le=365)):
     days_with_data = len(daily_costs)
     daily_avg = total_cost / days_with_data if days_with_data else 0
 
-    # 昨日/前日（取最近两天）
-    yesterday_cost = daily_costs[-1]['cost'] if len(daily_costs) >= 1 else 0
-    day_before_cost = daily_costs[-2]['cost'] if len(daily_costs) >= 2 else 0
-    mom_change_pct = ((yesterday_cost - day_before_cost) / day_before_cost * 100) if day_before_cost > 0 else 0
-
     # 模型排名
     model_totals_sorted = sorted(model_agg.items(), key=lambda x: x[1], reverse=True)
     model_totals = []
@@ -102,13 +104,11 @@ async def reconcile_summary(days: int = Query(default=30, ge=1, le=365)):
             'start': dates[-1] if dates else '',
             'end': dates[0] if dates else '',
             'days_with_data': days_with_data,
+            'month': now.strftime('%Y-%m'),
         },
         'totals': {
             'total_cost': round(total_cost, 2),
             'daily_avg': round(daily_avg, 2),
-            'yesterday_cost': round(yesterday_cost, 2),
-            'day_before_cost': round(day_before_cost, 2),
-            'mom_change_pct': round(mom_change_pct, 1),
         },
         'daily_costs': daily_costs,
         'model_totals': model_totals,
