@@ -166,7 +166,7 @@ def handler(event, context):
         try:
             utc_date = now.strftime('%Y-%m-%d')
             utc_time = now.strftime('%H:%M')
-            expire_at = int((now + timedelta(days=3)).timestamp())
+            expire_at = int((now + timedelta(days=2)).timestamp())
 
             # 查询所有 region 的模型明细（5min 窗口）
             all_models_5min = {}
