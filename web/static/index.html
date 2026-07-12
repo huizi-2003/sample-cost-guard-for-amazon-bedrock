@@ -86,6 +86,7 @@ tr:hover { background: #faf7f4; }
       <div class="tab" data-panel="reconcile">历史对账</div>
       <div class="tab" data-panel="monitor">今日监控</div>
       <div class="tab" data-panel="config">配置管理</div>
+      <div class="tab" data-panel="iam-scan">权限扫描</div>
     </nav>
   </aside>
   <main class="main">
@@ -173,6 +174,35 @@ tr:hover { background: #faf7f4; }
   <div id="monitor-error" style="display:none; text-align:center; color:#d32f2f;"></div>
 </div>
 
+<!-- Tab 5: 权限扫描 -->
+<div id="iam-scan" class="panel">
+  <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+    <h3 style="margin:0">Bedrock 权限扫描</h3>
+    <button class="btn" id="btn-iam-scan" onclick="triggerIamScan()">扫描全部 IAM 身份</button>
+    <span id="iam-scan-status" style="font-size:12px;color:#6b6560"></span>
+  </div>
+  <p style="color:#6b6560;font-size:13px;margin:0 0 12px">扫描当前账号所有 IAM Users、Roles、Groups，列出拥有 Bedrock 相关权限（含 * 全权限）的身份。用于盗刷排查时快速定位可疑身份。</p>
+
+  <div id="iam-scan-meta" style="display:none; margin-bottom:16px;">
+    <div class="summary">
+      <div class="summary-card"><div class="value" id="iam-total">-</div><div class="label">有权身份总数</div></div>
+      <div class="summary-card"><div class="value" id="iam-users">-</div><div class="label">Users</div></div>
+      <div class="summary-card"><div class="value" id="iam-roles">-</div><div class="label">Roles</div></div>
+      <div class="summary-card"><div class="value" id="iam-groups">-</div><div class="label">Groups</div></div>
+    </div>
+    <div style="font-size:12px;color:#999;margin-top:8px">上次扫描时间：<span id="iam-scan-time">-</span></div>
+  </div>
+
+  <div id="iam-scan-empty" style="display:none; text-align:center; padding:60px; color:#888;">
+    尚未执行扫描，点击上方按钮开始
+  </div>
+
+  <table id="iam-scan-table" style="display:none">
+    <thead><tr><th>类型</th><th>名称</th><th>Bedrock Actions</th><th>策略来源</th><th>信任关系 / 组成员</th></tr></thead>
+    <tbody id="iam-scan-body"></tbody>
+  </table>
+</div>
+
 <!-- Tab 4: 配置管理 -->
 <div id="config" class="panel">
   <h3>用量监控告警阈值</h3>
@@ -244,6 +274,9 @@ document.querySelectorAll('.tab').forEach(tab => {
       monitorRefreshTimer = setInterval(() => { loadMonitorChart(); loadTodayCost(); }, 5 * 60 * 1000);
     } else {
       if (monitorRefreshTimer) { clearInterval(monitorRefreshTimer); monitorRefreshTimer = null; }
+    }
+    if (tab.dataset.panel === 'iam-scan') {
+      loadIamScan();
     }
   };
 });
@@ -830,6 +863,92 @@ function formatTokenCount(val) {
   return Math.round(val).toString();
 }
 
+// ===== IAM Scan =====
+async function loadIamScan() {
+  try {
+    const resp = await fetch(API + '/api/iam-scan');
+    const data = await resp.json();
+    if (!data.scan_time) {
+      document.getElementById('iam-scan-empty').style.display = '';
+      document.getElementById('iam-scan-meta').style.display = 'none';
+      document.getElementById('iam-scan-table').style.display = 'none';
+      return;
+    }
+    document.getElementById('iam-scan-empty').style.display = 'none';
+    document.getElementById('iam-scan-meta').style.display = '';
+    document.getElementById('iam-scan-table').style.display = '';
+
+    document.getElementById('iam-total').textContent = data.total_identities;
+    document.getElementById('iam-users').textContent = data.user_count;
+    document.getElementById('iam-roles').textContent = data.role_count;
+    document.getElementById('iam-groups').textContent = data.group_count;
+    document.getElementById('iam-scan-time').textContent = data.scan_time;
+
+    const tbody = document.getElementById('iam-scan-body');
+    tbody.innerHTML = '';
+    for (const r of data.results) {
+      const tr = document.createElement('tr');
+
+      // 类型标签颜色
+      const typeColors = { User: '#c07830', Role: '#3a87ad', Group: '#2d8659' };
+      const typeCell = `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;color:#fff;background:${typeColors[r.identity_type] || '#666'}">${r.identity_type}</span>`;
+
+      // Actions
+      const actionsHtml = (r.actions || []).map(a => `<code style="font-size:11px;background:#f5f0eb;padding:2px 6px;border-radius:3px;margin:1px">${a}</code>`).join(' ');
+
+      // 策略来源
+      let policiesHtml = '';
+      for (const p of (r.policies || [])) {
+        let label = p.name;
+        if (p.type === 'managed') label += ' <span style="color:#999;font-size:10px">(托管)</span>';
+        else label += ' <span style="color:#999;font-size:10px">(内联)</span>';
+        if (p.via_group) label += ` <span style="color:#2d8659;font-size:10px">via ${p.via_group}</span>`;
+        policiesHtml += `<div style="font-size:12px;line-height:1.6">${label}</div>`;
+      }
+
+      // 信任关系 / 组成员
+      let extraHtml = '';
+      if (r.identity_type === 'Role' && r.trust_principals && r.trust_principals.length > 0) {
+        extraHtml = r.trust_principals.map(p => `<div style="font-size:11px;color:#666;word-break:break-all">${p}</div>`).join('');
+      } else if (r.identity_type === 'Group' && r.members && r.members.length > 0) {
+        extraHtml = r.members.map(m => `<span style="font-size:11px;background:#f0ebe4;padding:2px 6px;border-radius:3px;margin:1px">${m}</span>`).join(' ');
+      }
+
+      tr.innerHTML = `<td>${typeCell}</td><td style="font-weight:500;font-size:13px">${r.name}</td><td>${actionsHtml}</td><td>${policiesHtml}</td><td>${extraHtml}</td>`;
+      tbody.appendChild(tr);
+    }
+  } catch (e) {
+    console.error('loadIamScan failed:', e);
+  }
+}
+
+async function triggerIamScan() {
+  const btn = document.getElementById('btn-iam-scan');
+  const status = document.getElementById('iam-scan-status');
+  btn.disabled = true;
+  btn.textContent = '扫描中...';
+  status.textContent = '正在扫描所有 IAM 身份的策略，可能需要 10~30 秒...';
+
+  try {
+    const resp = await fetch(API + '/api/iam-scan', { method: 'POST' });
+    const data = await resp.json();
+    if (data.ok) {
+      status.textContent = `✅ 扫描完成，发现 ${data.total} 个有 Bedrock 权限的身份`;
+      status.style.color = '#2d8659';
+      loadIamScan();
+    } else {
+      status.textContent = `❌ ${data.error || '扫描失败'}`;
+      status.style.color = '#d32f2f';
+    }
+  } catch (e) {
+    status.textContent = `❌ 请求失败: ${e.message}`;
+    status.style.color = '#d32f2f';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '扫描全部 IAM 身份';
+  }
+}
+
 // ===== Init =====
 loadOverview();
 loadDates();
@@ -837,6 +956,7 @@ loadThresholds();
 loadRegions();
 loadWebhook();
 loadNotifyPolicy();
+loadIamScan();
 </script>
 </body>
 </html>

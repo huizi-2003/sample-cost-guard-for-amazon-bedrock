@@ -325,6 +325,25 @@ Resources:
                 Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-reconciler"
               - Effect: Allow
                 Action:
+                  - iam:ListUsers
+                  - iam:ListRoles
+                  - iam:ListGroups
+                  - iam:ListAttachedUserPolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListAttachedGroupPolicies
+                  - iam:ListUserPolicies
+                  - iam:ListRolePolicies
+                  - iam:ListGroupPolicies
+                  - iam:ListGroupsForUser
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - iam:GetUserPolicy
+                  - iam:GetRolePolicy
+                  - iam:GetGroupPolicy
+                  - iam:GetGroup
+                Resource: '*'
+              - Effect: Allow
+                Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
