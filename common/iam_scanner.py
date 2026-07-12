@@ -9,8 +9,11 @@
 import logging
 
 import boto3
+from botocore.config import Config as BotoConfig
 
 from common.config import put_item, query_by_pk, _get_table
+
+_IAM_CONFIG = BotoConfig(retries={'max_attempts': 10, 'mode': 'adaptive'})
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -98,7 +101,7 @@ def _check_group_policies(iam, group_name):
 
 def scan_iam_identities():
     """扫描所有 IAM Users/Roles/Groups，找出有 Bedrock 权限的身份。"""
-    iam = boto3.client('iam')
+    iam = boto3.client('iam', config=_IAM_CONFIG)
     results = []
 
     # --- 扫描 Users ---
