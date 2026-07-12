@@ -29,7 +29,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
-from common.config import save_reconcile_record, get_webhook_config, get_notify_policy
+from common.config import save_reconcile_record, get_webhook_config, get_notify_policy, get_account_id
 from common.holiday import is_workday
 from common.webhook import send_webhook_all
 
@@ -428,9 +428,9 @@ def handler(event, context):
         end_date = (parsed + timedelta(days=1)).strftime('%Y-%m-%d')
         r = reconcile_one(start_date, end_date, now)
         if r.get('ce_error'):
-            send_webhook_all(f"[Bedrock 对账] Cost Explorer 查询失败: {r['ce_error']}", webhooks)
+            send_webhook_all(f"[Bedrock 对账] 账号 {get_account_id()} | Cost Explorer 查询失败: {r['ce_error']}", webhooks)
             return {'statusCode': 500, 'error': 'ce_failed'}
-        send_webhook_all(f"[Bedrock 日报] {start_date}\n\n{r['msg']}", webhooks)
+        send_webhook_all(f"[Bedrock 日报] 账号 {get_account_id()} | {start_date}\n\n{r['msg']}", webhooks)
         logger.info(r['msg'])
         return {'statusCode': 200, 'date': start_date, 'total_actual': r['total_actual'], 'reconcile_diff_pct': r['reconcile_diff_pct']}
 
@@ -442,7 +442,7 @@ def handler(event, context):
         ('T-1 (临时·账单可能未结算完)', (now - timedelta(days=1)).strftime('%Y-%m-%d'), now.strftime('%Y-%m-%d')),
     ]
 
-    combined = "[Bedrock 日报]\n"
+    combined = f"[Bedrock 日报] 账号 {get_account_id()}\n"
     dates = []
     for label, s, e in jobs:
         dates.append(s)

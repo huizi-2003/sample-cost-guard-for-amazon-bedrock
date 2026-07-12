@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
-from common.config import get_cost_thresholds, get_regions, get_alert_state, set_alert_state, get_webhook_config, put_item
+from common.config import get_cost_thresholds, get_regions, get_alert_state, set_alert_state, get_webhook_config, put_item, get_account_id
 from common.pricing import estimate_cost
 from common.webhook import send_webhook_all
 
@@ -122,7 +122,7 @@ def should_suppress(window, now, webhooks):
         elif window == '15min':
             return (now.timestamp() - float(val)) < 900
     except (ValueError, TypeError):
-        send_webhook_all(f"[Bedrock 监控] {window} 的提醒状态数据损坏，请检查。", webhooks)
+        send_webhook_all(f"[Bedrock 监控] 账号 {get_account_id()} | {window} 的提醒状态数据损坏，请检查。", webhooks)
         return False
     return False
 
@@ -146,12 +146,12 @@ def handler(event, context):
         cost_thresholds = get_cost_thresholds()
     except Exception as e:
         logger.error(f"Failed to read cost thresholds from DDB: {e}")
-        send_webhook_all("[Bedrock 费用监控] 读取费用阈值失败，监控未运行。", webhooks)
+        send_webhook_all(f"[Bedrock 费用监控] 账号 {get_account_id()} | 读取费用阈值失败，监控未运行。", webhooks)
         return {'statusCode': 500, 'error': 'threshold_read_failed'}
 
     regions = get_regions()
     if not regions:
-        send_webhook_all("[Bedrock 监控] DDB 中未配置监控 Region。", webhooks)
+        send_webhook_all(f"[Bedrock 监控] 账号 {get_account_id()} | DDB 中未配置监控 Region。", webhooks)
         return {'statusCode': 500, 'error': 'no_regions'}
 
     region_results = []
@@ -167,7 +167,7 @@ def handler(event, context):
                 failed_regions.append(region)
 
     if len(failed_regions) > 3:
-        send_webhook_all(f"[Bedrock 监控] 异常：{len(failed_regions)} 个 Region 查询失败: {', '.join(failed_regions[:10])}", webhooks)
+        send_webhook_all(f"[Bedrock 监控] 账号 {get_account_id()} | 异常：{len(failed_regions)} 个 Region 查询失败: {', '.join(failed_regions[:10])}", webhooks)
 
     total_5min = sum(r['5min'] for r in region_results)
     total_15min = sum(r['15min'] for r in region_results)
@@ -227,7 +227,7 @@ def handler(event, context):
         today = now.strftime('%Y-%m-%d')
         if get_alert_state('cost_unconfigured') != today:
             send_webhook_all(
-                f"[Bedrock 费用监控] 尚未配置费用告警阈值($)，费用红线未生效。"
+                f"[Bedrock 费用监控] 账号 {get_account_id()} | 尚未配置费用告警阈值($)，费用红线未生效。"
                 f"今日累计预估 ${cost['daily']:,.2f}。请在 Web Console 配置阈值。",
                 webhooks,
             )
@@ -263,7 +263,7 @@ def handler(event, context):
         model_costs.sort(key=lambda x: x[1], reverse=True)
         top_models = model_costs[:5]
 
-        msg = "[Bedrock 费用提醒]\n"
+        msg = f"[Bedrock 费用提醒] 账号 {get_account_id()}\n"
         for a in alerts:
             msg += f"  {a['window']}: 预估 ${a['cost']:,.2f} > ${a['threshold']:,.2f}\n"
         if top_regions:

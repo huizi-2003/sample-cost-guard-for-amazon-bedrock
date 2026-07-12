@@ -5,6 +5,7 @@ from boto3.dynamodb.conditions import Key
 TABLE_NAME = os.environ.get('DDB_TABLE', 'bedrock-cost-guard')
 
 _table = None
+_account_id = None
 
 
 def _get_table():
@@ -12,6 +13,14 @@ def _get_table():
     if _table is None:
         _table = boto3.resource('dynamodb').Table(TABLE_NAME)
     return _table
+
+
+def get_account_id():
+    """获取当前 AWS 账号 ID（模块级缓存，整个 Lambda 生命周期只调一次 STS）。"""
+    global _account_id
+    if _account_id is None:
+        _account_id = boto3.client('sts').get_caller_identity()['Account']
+    return _account_id
 
 
 def get_item(pk, sk):
