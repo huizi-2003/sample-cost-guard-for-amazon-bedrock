@@ -4,7 +4,8 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
-from common.config import get_thresholds, get_regions, get_alert_state, set_alert_state, get_webhook_config, put_item
+from common.config import get_cost_thresholds, get_regions, get_alert_state, set_alert_state, get_webhook_config, put_item
+from common.pricing import estimate_cost
 from common.webhook import send_webhook_all
 
 logger = logging.getLogger()
@@ -142,10 +143,10 @@ def handler(event, context):
     webhooks = get_webhook_config()
 
     try:
-        thresholds = get_thresholds()
+        cost_thresholds = get_cost_thresholds()
     except Exception as e:
-        logger.error(f"Failed to read thresholds from DDB: {e}")
-        send_webhook_all("[Bedrock 监控] 读取阈值失败，监控未运行。", webhooks)
+        logger.error(f"Failed to read cost thresholds from DDB: {e}")
+        send_webhook_all("[Bedrock 费用监控] 读取费用阈值失败，监控未运行。", webhooks)
         return {'statusCode': 500, 'error': 'threshold_read_failed'}
 
     regions = get_regions()
@@ -174,6 +175,25 @@ def handler(event, context):
 
     logger.info(json.dumps({'5min': total_5min, '15min': total_15min, 'daily': total_daily}))
 
+    # 按窗口聚合各 region 的每模型每类型明细（供持久化、成本估算、告警共用）
+    agg_models = {'5min': {}, '15min': {}, 'daily': {}}
+    for r in region_results:
+        rm = r.get('models') or {}
+        for window in ('5min', '15min', 'daily'):
+            for model_name, type_counts in rm.get(window, {}).items():
+                dest = agg_models[window].setdefault(model_name, {t: 0 for t in TOKEN_TYPES})
+                for token_type in TOKEN_TYPES:
+                    dest[token_type] += type_counts.get(token_type, 0)
+
+    # 预估费用（$）：token 明细 × 价目表。unpriced 为有量但无价的模型（费用被低估）
+    cost = {}
+    unpriced = {}
+    for window in ('5min', '15min', 'daily'):
+        cost[window], unpriced[window] = estimate_cost(agg_models[window])
+    logger.info(json.dumps({'cost_5min': round(cost['5min'], 4),
+                            'cost_15min': round(cost['15min'], 4),
+                            'cost_daily': round(cost['daily'], 4)}))
+
     # === 持久化 Monitor 记录（含模型明细）===
     if region_results:
         try:
@@ -181,15 +201,11 @@ def handler(event, context):
             utc_time = now.strftime('%H:%M')
             expire_at = int((now + timedelta(days=2)).timestamp())
 
-            # 模型明细（5min 窗口）直接由本轮 fetch_region 已拉取的数据聚合，
-            # 无需再查一次 CloudWatch（旧实现在这里对所有 region 又扫了一遍）
-            all_models_5min = {}
-            for r in region_results:
-                for model_name, type_counts in (r.get('models') or {}).get('5min', {}).items():
-                    if model_name not in all_models_5min:
-                        all_models_5min[model_name] = {t: 0 for t in TOKEN_TYPES}
-                    for token_type, val in type_counts.items():
-                        all_models_5min[model_name][token_type] += int(val)
+            # 模型明细（5min 窗口）取本轮已聚合的数据，类型量转 int 落库
+            all_models_5min = {
+                m: {t: int(tc.get(t, 0)) for t in TOKEN_TYPES}
+                for m, tc in agg_models['5min'].items()
+            }
 
             put_item(
                 f'MONITOR#{utc_date}',
@@ -206,13 +222,22 @@ def handler(event, context):
     else:
         logger.warning("No region data available, skipping monitor record persistence")
 
+    # 费用阈值未配置：直接通知用户（每日去重），不做阈值比较
+    if not cost_thresholds:
+        today = now.strftime('%Y-%m-%d')
+        if get_alert_state('cost_unconfigured') != today:
+            send_webhook_all(
+                f"[Bedrock 费用监控] 尚未配置费用告警阈值($)，费用红线未生效。"
+                f"今日累计预估 ${cost['daily']:,.2f}。请在 Web Console 配置阈值。",
+                webhooks,
+            )
+            set_alert_state('cost_unconfigured', today)
+        return {'statusCode': 200, 'alerts': [], 'cost_thresholds_configured': False}
+
     alerts = []
-    if total_5min > thresholds['5min']:
-        alerts.append({'window': '5min', 'total': total_5min, 'threshold': thresholds['5min']})
-    if total_15min > thresholds['15min']:
-        alerts.append({'window': '15min', 'total': total_15min, 'threshold': thresholds['15min']})
-    if total_daily > thresholds['daily']:
-        alerts.append({'window': 'daily', 'total': total_daily, 'threshold': thresholds['daily']})
+    for window in ('5min', '15min', 'daily'):
+        if window in cost_thresholds and cost[window] > cost_thresholds[window]:
+            alerts.append({'window': window, 'cost': cost[window], 'threshold': cost_thresholds[window]})
 
     if alerts:
         alerts = [a for a in alerts if not should_suppress(a['window'], now, webhooks)]
@@ -220,28 +245,37 @@ def handler(event, context):
     if alerts:
         alert = alerts[0]
         window = alert['window']
-        top_regions = sorted(region_results, key=lambda r: r[window], reverse=True)[:5]
 
-        # 模型明细直接取本轮已拉取的对应窗口数据，无需再查 CloudWatch
-        all_models = {}
-        for r in top_regions:
-            if r[window] > 0:
-                for model_name, type_counts in (r.get('models') or {}).get(window, {}).items():
-                    all_models[model_name] = all_models.get(model_name, 0) + sum(type_counts.values())
+        # 按预估 $ 排序 Top Region / Top 模型（数据取本轮已聚合结果，不再查 CloudWatch）
+        region_costs = []
+        for r in region_results:
+            rc, _ = estimate_cost((r.get('models') or {}).get(window, {}))
+            if rc > 0:
+                region_costs.append((r['region'], rc))
+        region_costs.sort(key=lambda x: x[1], reverse=True)
+        top_regions = region_costs[:5]
 
-        top_models = sorted(all_models.items(), key=lambda x: x[1], reverse=True)[:5]
+        model_costs = []
+        for model_name, type_counts in agg_models[window].items():
+            mc, _ = estimate_cost({model_name: type_counts})
+            if mc > 0:
+                model_costs.append((model_name, mc))
+        model_costs.sort(key=lambda x: x[1], reverse=True)
+        top_models = model_costs[:5]
 
-        msg = "[Bedrock 用量提醒]\n"
+        msg = "[Bedrock 费用提醒]\n"
         for a in alerts:
-            msg += f"  {a['window']}: {a['total']:,.0f} > {a['threshold']:,.0f}\n"
-        msg += f"\nTop Region（{alert['window']}）:\n"
-        for r in top_regions:
-            if r[alert['window']] > 0:
-                msg += f"  {r['region']}: {r[alert['window']]:,.0f}\n"
+            msg += f"  {a['window']}: 预估 ${a['cost']:,.2f} > ${a['threshold']:,.2f}\n"
+        if top_regions:
+            msg += f"\nTop Region（{window}，按预估 $）:\n"
+            for region, rc in top_regions:
+                msg += f"  {region}: ${rc:,.2f}\n"
         if top_models:
-            msg += "\nTop 模型:\n"
-            for label, val in top_models:
-                msg += f"  {label}: {val:,.0f}\n"
+            msg += "\nTop 模型（按预估 $）:\n"
+            for label, mc in top_models:
+                msg += f"  {label}: ${mc:,.2f}\n"
+        if unpriced[window]:
+            msg += f"\n⚠ 未定价模型（预估已低估，请在 common/pricing.py 补价）: {', '.join(sorted(unpriced[window]))}\n"
 
         send_webhook_all(msg, webhooks)
         for a in alerts:

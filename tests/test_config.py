@@ -1,7 +1,7 @@
 """Unit tests for common/config.py
 
 Covers:
-- get_thresholds: normal read, fallback to defaults
+- get_cost_thresholds: reads COST_THRESHOLD as floats ($), empty when unconfigured
 - get_regions: normal read, first-run default write
 - get_alert_state / set_alert_state
 - get_webhook_config: normal read, no config fallback
@@ -30,26 +30,24 @@ def mock_dynamodb():
     common.config._table = None
 
 
-class TestGetThresholds:
-    """get_thresholds: reads THRESHOLD items or returns defaults."""
+class TestGetCostThresholds:
+    """get_cost_thresholds: reads COST_THRESHOLD items as floats ($)."""
 
-    def test_returns_thresholds_from_ddb(self, mock_dynamodb):
+    def test_returns_cost_thresholds_as_float(self, mock_dynamodb):
         mock_dynamodb.query.return_value = {
             'Items': [
-                {'PK': 'THRESHOLD', 'SK': '5min', 'value': 100000},
-                {'PK': 'THRESHOLD', 'SK': '15min', 'value': 500000},
-                {'PK': 'THRESHOLD', 'SK': 'daily', 'value': 2000000},
+                {'PK': 'COST_THRESHOLD', 'SK': '5min', 'value': '2.5'},
+                {'PK': 'COST_THRESHOLD', 'SK': 'daily', 'value': '100'},
             ]
         }
-        from common.config import get_thresholds
-        result = get_thresholds()
-        assert result == {'5min': 100000, '15min': 500000, 'daily': 2000000}
+        from common.config import get_cost_thresholds
+        result = get_cost_thresholds()
+        assert result == {'5min': 2.5, 'daily': 100.0}
 
-    def test_returns_defaults_when_no_items(self, mock_dynamodb):
+    def test_empty_when_unconfigured(self, mock_dynamodb):
         mock_dynamodb.query.return_value = {'Items': []}
-        from common.config import get_thresholds
-        result = get_thresholds()
-        assert result == {'5min': 999999999, '15min': 999999999, 'daily': 999999999}
+        from common.config import get_cost_thresholds
+        assert get_cost_thresholds() == {}
 
 
 class TestGetRegions:

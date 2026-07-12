@@ -193,7 +193,7 @@ class TestHandlerAlerts:
     @pytest.fixture
     def mock_env(self):
         """Set up common mocks for handler tests."""
-        with patch('monitor.handler.get_thresholds', return_value={'5min': 1000, '15min': 5000, 'daily': 10000}), \
+        with patch('monitor.handler.get_cost_thresholds', return_value={'5min': 1e12, '15min': 1e12, 'daily': 1e12}), \
              patch('monitor.handler.get_regions', return_value=['us-east-1', 'us-west-2']), \
              patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook.example.com', 'type': 'feishu'}]), \
              patch('monitor.handler.put_item') as mock_put, \
@@ -209,7 +209,8 @@ class TestHandlerAlerts:
 
     def test_no_alert_when_under_all_thresholds(self, mock_env):
         mock_env['fetch_region'].return_value = {
-            'region': 'us-east-1', '5min': 100, '15min': 400, 'daily': 900
+            'region': 'us-east-1', '5min': 100, '15min': 400, 'daily': 900,
+            'models': {'5min': {}, '15min': {}, 'daily': {}},
         }
         from monitor.handler import handler
         result = handler({}, None)
@@ -217,15 +218,34 @@ class TestHandlerAlerts:
         assert result['alerts'] == []
         mock_env['send_webhook_all'].assert_not_called()
 
-    def test_alert_triggered_when_5min_exceeds_threshold(self, mock_env):
+    def test_alert_triggered_when_5min_cost_exceeds_threshold(self, mock_env):
+        # sonnet output $15/MTok × 1M × 2 regions = $30 estimated cost
+        models = {'claude-sonnet-4': {'input': 0, 'output': 1_000_000, 'cache_read': 0, 'cache_write': 0}}
         mock_env['fetch_region'].return_value = {
-            'region': 'us-east-1', '5min': 600, '15min': 400, 'daily': 900
+            'region': 'us-east-1', '5min': 1_000_000, '15min': 400, 'daily': 900,
+            'models': {'5min': models, '15min': {}, 'daily': models},
         }
-        from monitor.handler import handler
-        result = handler({}, None)
-        # 2 regions × 600 = 1200 > 1000 threshold
+        with patch('monitor.handler.get_cost_thresholds', return_value={'5min': 10, '15min': 1e12, 'daily': 1e12}):
+            from monitor.handler import handler
+            result = handler({}, None)
+        # 2 regions × $15 = $30 > $10 threshold
         assert '5min' in result['alerts']
         mock_env['send_webhook_all'].assert_called()
+        # 告警文案以 $ 计
+        assert '$' in mock_env['send_webhook_all'].call_args[0][0]
+
+    def test_unconfigured_cost_thresholds_notifies(self, mock_env):
+        """未配置费用阈值时，直接通知用户（每日去重）。"""
+        mock_env['fetch_region'].return_value = {
+            'region': 'us-east-1', '5min': 0, '15min': 0, 'daily': 0,
+            'models': {'5min': {}, '15min': {}, 'daily': {}},
+        }
+        with patch('monitor.handler.get_cost_thresholds', return_value={}):
+            from monitor.handler import handler
+            result = handler({}, None)
+        assert result.get('cost_thresholds_configured') is False
+        calls = mock_env['send_webhook_all'].call_args_list
+        assert any('未配置' in c[0][0] for c in calls)
 
     def test_multi_region_failure_sends_alert(self, mock_env):
         """When >3 regions fail, a failure alert is sent."""
@@ -240,8 +260,8 @@ class TestHandlerAlerts:
         assert len(failure_alerts) >= 1
 
     def test_threshold_read_failure_sends_alert(self):
-        """When threshold read fails, an alert is sent and handler returns 500."""
-        with patch('monitor.handler.get_thresholds', side_effect=Exception("DDB timeout")), \
+        """When cost threshold read fails, an alert is sent and handler returns 500."""
+        with patch('monitor.handler.get_cost_thresholds', side_effect=Exception("DDB timeout")), \
              patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook', 'type': 'feishu'}]), \
              patch('monitor.handler.send_webhook_all') as mock_send:
             from monitor.handler import handler
@@ -251,7 +271,7 @@ class TestHandlerAlerts:
 
     def test_no_regions_configured_sends_alert(self):
         """When no regions configured, sends alert and returns 500."""
-        with patch('monitor.handler.get_thresholds', return_value={'5min': 1000, '15min': 5000, 'daily': 10000}), \
+        with patch('monitor.handler.get_cost_thresholds', return_value={'5min': 1e12, '15min': 1e12, 'daily': 1e12}), \
              patch('monitor.handler.get_regions', return_value=[]), \
              patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook', 'type': 'feishu'}]), \
              patch('monitor.handler.send_webhook_all') as mock_send:

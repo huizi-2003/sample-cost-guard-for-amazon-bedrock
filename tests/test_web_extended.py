@@ -220,28 +220,41 @@ class TestConfigRegions:
         mock_put.assert_called_once_with('CONFIG', 'regions', value='us-east-1,eu-west-1')
 
 
-# === GET/PUT /api/config/thresholds ===
+# === GET/PUT /api/config/cost-thresholds ===
 
 
-class TestConfigThresholds:
-    """Configuration API for alert thresholds."""
+class TestConfigCostThresholds:
+    """Configuration API for cost ($) alert thresholds."""
 
     @pytest.mark.anyio
-    @patch('web.app.get_thresholds')
-    async def test_get_thresholds(self, mock_get, client):
-        mock_get.return_value = {'5min': 100000, '15min': 500000, 'daily': 2000000}
-        resp = await client.get('/api/config/thresholds')
+    @patch('web.app.get_cost_thresholds')
+    async def test_get_cost_thresholds(self, mock_get, client):
+        mock_get.return_value = {'5min': 2.5, 'daily': 100.0}
+        resp = await client.get('/api/config/cost-thresholds')
         assert resp.status_code == 200
         data = resp.json()
-        assert data['5min'] == 100000
+        assert data['5min'] == 2.5
 
     @pytest.mark.anyio
     @patch('web.app.put_item')
-    async def test_put_thresholds(self, mock_put, client):
-        resp = await client.put('/api/config/thresholds',
-                               json={'5min': 50000, '15min': 200000, 'daily': 1000000})
+    async def test_put_cost_thresholds(self, mock_put, client):
+        resp = await client.put('/api/config/cost-thresholds',
+                                json={'5min': 2.5, '15min': 10, 'daily': 100})
         assert resp.status_code == 200
         assert mock_put.call_count == 3
+        # stored under COST_THRESHOLD
+        pks = {c.args[0] for c in mock_put.call_args_list}
+        assert pks == {'COST_THRESHOLD'}
+        # value must be a str (DynamoDB resource rejects Python float) and round-trip via float()
+        for c in mock_put.call_args_list:
+            v = c.kwargs['value']
+            assert isinstance(v, str)
+            float(v)  # parseable
+
+    @pytest.mark.anyio
+    async def test_put_cost_thresholds_rejects_negative(self, client):
+        resp = await client.put('/api/config/cost-thresholds', json={'5min': -1})
+        assert resp.status_code == 400
 
 
 # === GET/PUT /api/config/webhook ===

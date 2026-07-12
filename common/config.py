@@ -40,16 +40,19 @@ def query_by_pk(pk):
     return all_items
 
 
-def get_thresholds():
-    items = query_by_pk('THRESHOLD')
-    defaults = {'5min': 999999999, '15min': 999999999, 'daily': 999999999}
-    if not items:
-        return defaults
-    result = {item['SK']: int(item['value']) for item in items}
-    # 确保所有 key 都存在，缺失的用默认值补齐
-    for key, default_val in defaults.items():
-        if key not in result:
-            result[key] = default_val
+def get_cost_thresholds():
+    """费用告警阈值（单位：美元 $）。
+
+    存于 PK=COST_THRESHOLD。返回 {window: float}，仅包含已配置的窗口；
+    未配置任何窗口时返回空 dict，供监控据此判断"未配置"并直接通知用户。
+    """
+    items = query_by_pk('COST_THRESHOLD')
+    result = {}
+    for item in items:
+        try:
+            result[item['SK']] = float(item['value'])
+        except (ValueError, TypeError):
+            pass
     return result
 
 

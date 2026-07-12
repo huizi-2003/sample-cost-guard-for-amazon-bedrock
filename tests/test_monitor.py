@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock
 
 
 MOCK_PATCHES = {
-    'monitor.handler.get_thresholds': {'5min': 999999999, '15min': 999999999, 'daily': 999999999},
+    'monitor.handler.get_cost_thresholds': {'5min': 1e12, '15min': 1e12, 'daily': 1e12},
     'monitor.handler.get_regions': ['us-east-1'],
     'monitor.handler.get_webhook_config': [],
 }
@@ -20,7 +20,7 @@ MOCK_PATCHES = {
 @pytest.fixture
 def mock_env():
     """Set up common mocks for monitor handler tests."""
-    with patch('monitor.handler.get_thresholds', return_value=MOCK_PATCHES['monitor.handler.get_thresholds']), \
+    with patch('monitor.handler.get_cost_thresholds', return_value=MOCK_PATCHES['monitor.handler.get_cost_thresholds']), \
          patch('monitor.handler.get_regions', return_value=MOCK_PATCHES['monitor.handler.get_regions']), \
          patch('monitor.handler.get_webhook_config', return_value=MOCK_PATCHES['monitor.handler.get_webhook_config']), \
          patch('monitor.handler.put_item') as mock_put_item, \
@@ -79,26 +79,27 @@ class TestMonitorPersistence:
         mock_env['put_item'].assert_not_called()
 
     def test_ddb_write_failure_does_not_prevent_alert_evaluation(self, mock_env):
-        """Validates Requirement 3.5: DDB write failure is logged but does not
-        prevent alert evaluation from running."""
-        # Return data that triggers an alert (5min total > threshold)
+        """DDB write failure is logged but does not prevent (cost) alert evaluation."""
+        # sonnet output $15/MTok × 2M tokens = $30 estimated cost
+        models = {'claude-sonnet-4': {'input': 0, 'output': 2_000_000, 'cache_read': 0, 'cache_write': 0}}
         mock_env['fetch_region'].return_value = {
-            'region': 'us-east-1', '5min': 999999999 + 1, '15min': 300, 'daily': 1000
+            'region': 'us-east-1', '5min': 2_000_000, '15min': 2_000_000, 'daily': 2_000_000,
+            'models': {'5min': models, '15min': models, 'daily': models},
         }
 
         # Make put_item raise an exception
         mock_env['put_item'].side_effect = Exception("DDB error")
 
-        # Lower 5min threshold to trigger alert
-        with patch('monitor.handler.get_thresholds', return_value={
-            '5min': 100, '15min': 999999999, 'daily': 999999999
+        # $1 threshold on 5min → $30 > $1 triggers alert
+        with patch('monitor.handler.get_cost_thresholds', return_value={
+            '5min': 1, '15min': 1e12, 'daily': 1e12
         }):
             from monitor.handler import handler
             result = handler({}, None)
 
         # Handler should still return 200 (did not crash)
         assert result['statusCode'] == 200
-        # Alert should have been triggered (5min total > threshold of 100)
+        # Alert should have been triggered ($30 > $1)
         assert '5min' in result['alerts']
         # Webhook should have been called for the alert
         mock_env['send_webhook_all'].assert_called()

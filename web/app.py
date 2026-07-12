@@ -15,11 +15,12 @@ from fastapi import FastAPI, Request, Query
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from common.config import (
-    get_thresholds, get_regions, get_reconcile_by_date,
+    get_cost_thresholds, get_regions, get_reconcile_by_date,
     get_reconcile_dates, put_item, get_item, query_by_pk,
     get_webhook_config, save_webhook_config,
     get_notify_policy, save_notify_policy
 )
+from common.pricing import PRICING, match_pricing as _match_pricing
 
 CW_TIMEOUT = BotoConfig(connect_timeout=10, read_timeout=30, retries={'max_attempts': 1})
 
@@ -299,24 +300,7 @@ def _fetch_models_from_cw(date):
 
 
 # ===== 今日成本估算 =====
-
-# $/MTok — Bedrock cross-region 基准价格（direct in-region ≈ ×1.1，差异忽略）
-# cache_write 统一用 5min 标准价格
-PRICING = {
-    'opus':   {'input': 5,   'output': 25,  'cache_read': 0.5,  'cache_write': 6.25},
-    'fable':  {'input': 10,  'output': 50,  'cache_read': 1.0,  'cache_write': 12.5},
-    'sonnet': {'input': 3,   'output': 15,  'cache_read': 0.3,  'cache_write': 3.75},
-    'haiku':  {'input': 1,   'output': 5,   'cache_read': 0.1,  'cache_write': 1.25},
-}
-
-
-def _match_pricing(model_name):
-    """按模型名模糊匹配到价格系列，返回价格 dict 或 None。"""
-    lower = model_name.lower()
-    for series, prices in PRICING.items():
-        if series in lower:
-            return prices
-    return None
+# 价目表与匹配逻辑集中在 common/pricing.py（monitor / web 共用同一份）
 
 
 @app.get('/api/today-cost')
@@ -517,26 +501,28 @@ async def put_config_regions(request: Request):
     return {'ok': True}
 
 
-@app.get('/api/config/thresholds')
-async def get_config_thresholds():
-    return get_thresholds()
+@app.get('/api/config/cost-thresholds')
+async def get_config_cost_thresholds():
+    """费用告警阈值（$）。"""
+    return get_cost_thresholds()
 
 
-@app.put('/api/config/thresholds')
-async def put_config_thresholds(request: Request):
+@app.put('/api/config/cost-thresholds')
+async def put_config_cost_thresholds(request: Request):
     data = await request.json()
     valid_keys = {'5min', '15min', 'daily'}
     for key, val in data.items():
         if key not in valid_keys:
             return JSONResponse({'error': f'Invalid key: {key}, must be one of {valid_keys}'}, status_code=400)
         try:
-            int_val = int(val)
+            f_val = float(val)
         except (ValueError, TypeError):
-            return JSONResponse({'error': f'Invalid value for {key}: must be integer'}, status_code=400)
-        if int_val < 0:
+            return JSONResponse({'error': f'Invalid value for {key}: must be a number'}, status_code=400)
+        if f_val < 0:
             return JSONResponse({'error': f'Invalid value for {key}: must be non-negative'}, status_code=400)
     for key, val in data.items():
-        put_item('THRESHOLD', key, value=int(val))
+        # DynamoDB(resource) 不接受 Python float，统一以字符串存储；读取端 float() 解析
+        put_item('COST_THRESHOLD', key, value=str(float(val)))
     return {'ok': True}
 
 
