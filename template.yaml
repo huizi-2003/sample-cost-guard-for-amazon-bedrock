@@ -322,7 +322,9 @@ Resources:
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
-                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-reconciler"
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-reconciler"
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-web"
               - Effect: Allow
                 Action:
                   - iam:ListUsers
@@ -361,7 +363,7 @@ Resources:
         S3Key: web.zip
         S3ObjectVersion: !GetAtt CodeObject.WebVersionId
       Role: !GetAtt WebLambdaRole.Arn
-      Timeout: 30
+      Timeout: 60
       MemorySize: 512
       Environment:
         Variables:

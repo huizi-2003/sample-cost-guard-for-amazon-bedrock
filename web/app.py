@@ -754,51 +754,41 @@ def _check_group_policies(iam, group_name):
 
 @app.post('/api/iam-scan')
 async def trigger_iam_scan():
-    """触发 IAM Bedrock 权限扫描，结果写入 DDB。"""
+    """触发 IAM Bedrock 权限扫描（异步）。
+
+    API Gateway 硬限制 29s，大型账号可能有几百个 IAM 身份，扫描耗时 30s+。
+    方案：POST 立即返回 → 异步 invoke 自身 Lambda 执行扫描 → 前端轮询 GET 接口。
+    """
+    scan_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # 立即标记"扫描中"
+    put_item('IAM_SCAN', '_meta',
+             scan_time=scan_time,
+             status='scanning',
+             total_identities='0',
+             user_count='0',
+             role_count='0',
+             group_count='0')
+
+    # 异步 invoke 自身 Lambda 执行实际扫描
+    lambda_client = boto3.client('lambda')
+    function_name = os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'bedrock-cost-guard-web')
     try:
-        scan_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-        results = _scan_iam_identities()
-
-        # 先删除旧的扫描结果
-        old_items = query_by_pk('IAM_SCAN')
-        table = __import__('common.config', fromlist=['_get_table'])._get_table()
-        for item in old_items:
-            table.delete_item(Key={'PK': item['PK'], 'SK': item['SK']})
-
-        # 写入新结果
-        user_count = sum(1 for r in results if r['identity_type'] == 'User')
-        role_count = sum(1 for r in results if r['identity_type'] == 'Role')
-        group_count = sum(1 for r in results if r['identity_type'] == 'Group')
-
+        lambda_client.invoke(
+            FunctionName=function_name,
+            InvocationType='Event',  # 异步，立即返回
+            Payload=json.dumps({'_iam_scan_task': True, 'scan_time': scan_time}),
+        )
+    except Exception as e:
         put_item('IAM_SCAN', '_meta',
                  scan_time=scan_time,
-                 total_identities=str(len(results)),
-                 user_count=str(user_count),
-                 role_count=str(role_count),
-                 group_count=str(group_count))
+                 status='error',
+                 error=str(e),
+                 total_identities='0',
+                 user_count='0', role_count='0', group_count='0')
+        return JSONResponse({'error': f'触发扫描失败: {str(e)}'}, status_code=500)
 
-        for r in results:
-            sk = f"{r['identity_type'].lower()}/{r['name']}"
-            put_item('IAM_SCAN', sk,
-                     identity_type=r['identity_type'],
-                     name=r['name'],
-                     arn=r['arn'],
-                     actions=r['actions'],
-                     policies=r['policies'],
-                     trust_principals=r.get('trust_principals'),
-                     members=r.get('members'),
-                     create_date=r.get('create_date'))
-
-        return {
-            'ok': True,
-            'scan_time': scan_time,
-            'total': len(results),
-            'users': user_count,
-            'roles': role_count,
-            'groups': group_count,
-        }
-    except Exception as e:
-        return JSONResponse({'error': f'扫描失败: {str(e)}'}, status_code=500)
+    return {'ok': True, 'status': 'scanning', 'scan_time': scan_time}
 
 
 @app.get('/api/iam-scan')
@@ -806,7 +796,7 @@ async def get_iam_scan():
     """获取上次 IAM 扫描结果。"""
     items = query_by_pk('IAM_SCAN')
     if not items:
-        return {'scan_time': None, 'results': []}
+        return {'scan_time': None, 'status': None, 'results': []}
 
     meta = None
     results = []
@@ -820,13 +810,17 @@ async def get_iam_scan():
     type_order = {'User': 0, 'Role': 1, 'Group': 2}
     results.sort(key=lambda r: (type_order.get(r.get('identity_type'), 9), r.get('name', '')))
 
+    status = meta.get('status', 'done') if meta else None
+
     return {
         'scan_time': meta.get('scan_time') if meta else None,
+        'status': status,
+        'error': meta.get('error') if meta else None,
         'total_identities': int(meta.get('total_identities', 0)) if meta else 0,
         'user_count': int(meta.get('user_count', 0)) if meta else 0,
         'role_count': int(meta.get('role_count', 0)) if meta else 0,
         'group_count': int(meta.get('group_count', 0)) if meta else 0,
-        'results': results,
+        'results': results if status == 'done' else [],
     }
 
 
@@ -866,7 +860,67 @@ async def backfill(request: Request):
 # ===== Lambda handler (API Gateway) =====
 from mangum import Mangum
 
-handler = Mangum(app)
+_mangum_handler = Mangum(app)
+
+
+def handler(event, context):
+    """Lambda 入口：区分 API Gateway 事件和内部异步任务。"""
+    # 异步 IAM 扫描任务（由 POST /api/iam-scan 触发）
+    if event.get('_iam_scan_task'):
+        return _execute_iam_scan(event.get('scan_time', ''))
+
+    # 正常 API Gateway 请求
+    return _mangum_handler(event, context)
+
+
+def _execute_iam_scan(scan_time):
+    """实际执行 IAM 扫描（异步 invoke 时调用，无超时限制）。"""
+    try:
+        results = _scan_iam_identities()
+
+        # 先删除旧的扫描结果
+        old_items = query_by_pk('IAM_SCAN')
+        from common.config import _get_table
+        table = _get_table()
+        for item in old_items:
+            if item['SK'] != '_meta':
+                table.delete_item(Key={'PK': item['PK'], 'SK': item['SK']})
+
+        # 写入新结果
+        user_count = sum(1 for r in results if r['identity_type'] == 'User')
+        role_count = sum(1 for r in results if r['identity_type'] == 'Role')
+        group_count = sum(1 for r in results if r['identity_type'] == 'Group')
+
+        for r in results:
+            sk = f"{r['identity_type'].lower()}/{r['name']}"
+            put_item('IAM_SCAN', sk,
+                     identity_type=r['identity_type'],
+                     name=r['name'],
+                     arn=r['arn'],
+                     actions=r['actions'],
+                     policies=r['policies'],
+                     trust_principals=r.get('trust_principals'),
+                     members=r.get('members'),
+                     create_date=r.get('create_date'))
+
+        # 更新 _meta 为完成
+        put_item('IAM_SCAN', '_meta',
+                 scan_time=scan_time,
+                 status='done',
+                 total_identities=str(len(results)),
+                 user_count=str(user_count),
+                 role_count=str(role_count),
+                 group_count=str(group_count))
+
+        return {'statusCode': 200, 'total': len(results)}
+    except Exception as e:
+        put_item('IAM_SCAN', '_meta',
+                 scan_time=scan_time,
+                 status='error',
+                 error=str(e),
+                 total_identities='0',
+                 user_count='0', role_count='0', group_count='0')
+        return {'statusCode': 500, 'error': str(e)}
 
 if __name__ == '__main__':
     import uvicorn

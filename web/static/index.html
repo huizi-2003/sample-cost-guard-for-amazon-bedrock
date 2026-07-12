@@ -864,19 +864,53 @@ function formatTokenCount(val) {
 }
 
 // ===== IAM Scan =====
+let iamPollTimer = null;
+
 async function loadIamScan() {
   try {
     const resp = await fetch(API + '/api/iam-scan');
     const data = await resp.json();
+
     if (!data.scan_time) {
       document.getElementById('iam-scan-empty').style.display = '';
       document.getElementById('iam-scan-meta').style.display = 'none';
       document.getElementById('iam-scan-table').style.display = 'none';
       return;
     }
+
+    // 正在扫描中 → 显示进度 + 轮询
+    if (data.status === 'scanning') {
+      document.getElementById('iam-scan-empty').style.display = 'none';
+      document.getElementById('iam-scan-meta').style.display = 'none';
+      document.getElementById('iam-scan-table').style.display = 'none';
+      const status = document.getElementById('iam-scan-status');
+      status.textContent = '⏳ 扫描进行中...';
+      status.style.color = '#c07830';
+      if (!iamPollTimer) {
+        iamPollTimer = setInterval(loadIamScan, 3000);
+      }
+      return;
+    }
+
+    // 停止轮询
+    if (iamPollTimer) { clearInterval(iamPollTimer); iamPollTimer = null; }
+    const btn = document.getElementById('btn-iam-scan');
+    btn.disabled = false;
+    btn.textContent = '扫描全部 IAM 身份';
+
+    // 扫描出错
+    if (data.status === 'error') {
+      const status = document.getElementById('iam-scan-status');
+      status.textContent = '❌ ' + (data.error || '扫描失败');
+      status.style.color = '#d32f2f';
+      return;
+    }
+
+    // 扫描完成
     document.getElementById('iam-scan-empty').style.display = 'none';
     document.getElementById('iam-scan-meta').style.display = '';
     document.getElementById('iam-scan-table').style.display = '';
+    document.getElementById('iam-scan-status').textContent = '';
 
     document.getElementById('iam-total').textContent = data.total_identities;
     document.getElementById('iam-users').textContent = data.user_count;
@@ -927,23 +961,26 @@ async function triggerIamScan() {
   const status = document.getElementById('iam-scan-status');
   btn.disabled = true;
   btn.textContent = '扫描中...';
-  status.textContent = '正在扫描所有 IAM 身份的策略，可能需要 10~30 秒...';
+  status.textContent = '⏳ 正在扫描所有 IAM 身份的策略...';
+  status.style.color = '#c07830';
 
   try {
     const resp = await fetch(API + '/api/iam-scan', { method: 'POST' });
     const data = await resp.json();
-    if (data.ok) {
-      status.textContent = `✅ 扫描完成，发现 ${data.total} 个有 Bedrock 权限的身份`;
-      status.style.color = '#2d8659';
-      loadIamScan();
+    if (data.ok || data.status === 'scanning') {
+      // 启动轮询等待结果
+      if (!iamPollTimer) {
+        iamPollTimer = setInterval(loadIamScan, 3000);
+      }
     } else {
       status.textContent = `❌ ${data.error || '扫描失败'}`;
       status.style.color = '#d32f2f';
+      btn.disabled = false;
+      btn.textContent = '扫描全部 IAM 身份';
     }
   } catch (e) {
     status.textContent = `❌ 请求失败: ${e.message}`;
     status.style.color = '#d32f2f';
-  } finally {
     btn.disabled = false;
     btn.textContent = '扫描全部 IAM 身份';
   }
