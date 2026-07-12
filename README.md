@@ -4,6 +4,21 @@
 
 AWS Bedrock 用量管控工具集：用量监控、每日对账、Web 管理界面。
 
+## 目录
+
+- [为什么需要这个项目](#为什么需要这个项目)
+- [功能](#功能)
+  - [1. Monitor — 用量监控](#1-monitor--用量监控)
+  - [2. Reconciler — 每日对账](#2-reconciler--每日对账--账单汇总)
+  - [3. Web Console — 管理界面](#3-web-console--管理界面)
+  - [4. 通知推送](#4-通知推送)
+  - [5. IAM 权限扫描](#5-iam-权限扫描--bedrock-调用权限审计)
+  - [6. Log Explorer — 调用日志查询（规划中）](#6-log-explorer--调用日志查询规划中)
+- [技术架构](#技术架构)
+- [成本估算](#成本估算)
+- [部署](#部署)
+- [目录结构](#目录结构)
+
 ## 为什么需要这个项目
 
 AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explorer 看到。如果 Bedrock 被滥用（Key 泄露、内部无节制调用等），等你发现时可能已经产生了大量费用。
@@ -210,7 +225,19 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 - **用量告警不受此策略影响，始终实时推送，不可关闭**
 - 策略仅控制 reconciler 日报推送；对账数据无论是否推送都会正常写入 DynamoDB
 
-### 5. Log Explorer — 调用日志查询（规划中）
+### 5. IAM 权限扫描 — Bedrock 调用权限审计
+
+被盗刷时第一步：快速定位账号内**谁能调用 Bedrock 产生费用**。
+
+- Web Console 第 5 个 tab，点按钮即扫描
+- 遍历所有 IAM Users / Roles / Groups 的托管策略 + 内联策略
+- **只标记危险 Action**：`bedrock:Invoke*`、`bedrock:Converse*`、`bedrock:*`、`*` 等能产生调用的权限；过滤掉只读的 `List*/Get*`
+- 显示每个身份的策略来源（哪个 Policy 授予的、是否通过 Group 继承）
+- Role 附带信任关系（谁能 assume）；Group 附带成员列表
+- 扫描结果持久化到 DynamoDB，无 TTL，直到下次点击扫描覆盖
+- 异步执行（Lambda 自调用），支持 IAM 身份数百个的大型账号
+
+### 6. Log Explorer — 调用日志查询（规划中）
 
 - 数据源：Bedrock Invocation Log (S3) + CloudTrail (S3)
 - 查询引擎：Athena
