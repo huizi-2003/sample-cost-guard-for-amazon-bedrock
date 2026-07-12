@@ -561,7 +561,7 @@ function renderWebhookList(items) {
     <div style="display:flex;gap:8px;align-items:center;margin:8px 0;padding:8px 12px;background:#f8f9fa;border-radius:6px" data-wh-idx="${i}">
       <div class="form-group" style="margin:0"><label style="font-size:11px">名称</label><input class="wh-name" value="${esc(item.name || item.type || 'feishu')}" style="width:100px"></div>
       <div class="form-group" style="margin:0"><label style="font-size:11px">渠道</label>
-        <select class="wh-type">
+        <select class="wh-type" style="width:90px">
           <option value="feishu"${item.type==='feishu'?' selected':''}>飞书</option>
           <option value="dingtalk"${item.type==='dingtalk'?' selected':''}>钉钉</option>
           <option value="wecom"${item.type==='wecom'?' selected':''}>企业微信</option>
