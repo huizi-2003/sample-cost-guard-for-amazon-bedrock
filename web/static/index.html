@@ -7,11 +7,14 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Söhne', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f9f5f1; color: #2d2d2a; }
-.header { background: #fff; padding: 16px 24px; border-bottom: 1px solid #e8e0d8; }
-.header h1 { color: #2d2d2a; font-size: 18px; font-weight: 700; display: inline-block; }
-.header span { color: #b5651d; }
+.header { background: #fff; padding: 10px 24px; border-bottom: 1px solid #e8e0d8; }
+.header-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.header h1 { color: #2d2d2a; font-size: 18px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; }
+.header h1 .tri { color: #b5651d; }
+.info-icon { color: #6b6560; font-size: 11px; font-weight: 600; font-style: normal; cursor: help; border: 1px solid #d4cdc4; border-radius: 50%; width: 15px; height: 15px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+.info-icon:hover { color: #b5651d; border-color: #b5651d; }
 .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
-.tabs { display: flex; gap: 0; margin-bottom: 20px; background: #fff; border-radius: 12px; padding: 4px; border: 1px solid #e8e0d8; }
+.tabs { display: flex; gap: 0; margin: 0; background: #faf7f4; border-radius: 12px; padding: 4px; border: 1px solid #e8e0d8; }
 .tab { padding: 10px 20px; cursor: pointer; border-radius: 8px; color: #6b6560; font-size: 14px; font-weight: 500; transition: all 0.2s; border: none; }
 .tab:hover { color: #2d2d2a; background: #f9f5f1; }
 .tab.active { color: #2d2d2a; background: #f0ebe4; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
@@ -62,15 +65,17 @@ tr:hover { background: #faf7f4; }
 </head>
 <body>
 <div class="header">
-  <h1><span>▲</span> Bedrock Cost Guard</h1> <span style="font-size:12px;color:#6b6560;margin-left:12px">数据来源 Cost Explorer，通常延迟 1~2 天，最近 1-2 天的数据可能不完整</span>
+  <div class="header-inner">
+    <h1><span class="tri">▲</span> Bedrock Cost Guard<span class="info-icon" title="数据来源 Cost Explorer，通常延迟 1~2 天，最近 1-2 天的数据可能不完整">i</span></h1>
+    <div class="tabs">
+      <div class="tab active" data-panel="overview">费用总览</div>
+      <div class="tab" data-panel="reconcile">历史对账</div>
+      <div class="tab" data-panel="monitor">今日监控</div>
+      <div class="tab" data-panel="config">配置管理</div>
+    </div>
+  </div>
 </div>
 <div class="container">
-<div class="tabs">
-  <div class="tab active" data-panel="overview">费用总览</div>
-  <div class="tab" data-panel="reconcile">历史对账</div>
-  <div class="tab" data-panel="monitor">今日监控</div>
-  <div class="tab" data-panel="config">配置管理</div>
-</div>
 
 <!-- Tab 1: 费用总览 -->
 <div id="overview" class="panel active">
@@ -173,19 +178,19 @@ tr:hover { background: #faf7f4; }
   <button class="btn" onclick="saveWebhook()" style="margin-top:8px">保存</button>
   <div id="wh-msg"></div>
 
-  <h3 style="margin-top:24px">每日账单推送策略</h3>
-  <p style="color:#6b6560;font-size:13px;margin:4px 0 8px">控制每日账单对账报告的推送时机</p>
-  <p style="color:#c4442a;font-size:13px;margin:0 0 12px;font-weight:500">⚠ 用量告警提醒不受此配置影响，始终实时推送，不可关闭</p>
-  <div style="display:flex;gap:16px;align-items:center;margin:12px 0">
+  <h3 style="margin-top:24px">每日账单推送策略
+    <span style="color:#c4442a;font-size:12px;font-weight:500;margin-left:8px">⚠ 用量告警不受影响，始终实时推送</span>
+  </h3>
+  <div style="display:flex;gap:16px;align-items:center;margin:8px 0;flex-wrap:wrap">
     <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
       <input type="radio" name="notify-policy" value="always"> 每天推送
     </label>
-    <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="工作日判断基于中国法定节假日（含调休上班），数据来源：国务院公告">
       <input type="radio" name="notify-policy" value="workday"> 仅工作日推送
+      <span style="color:#999;font-size:11px">（法定节假日含调休，据国务院公告）</span>
     </label>
+    <button class="btn" onclick="saveNotifyPolicy()" style="margin-left:auto">保存</button>
   </div>
-  <p style="color:#999;font-size:12px;margin:4px 0">工作日判断基于中国法定节假日（含调休上班），数据来源：国务院公告</p>
-  <button class="btn" onclick="saveNotifyPolicy()">保存</button>
   <div id="np-msg"></div>
 
   <h3 style="margin-top:24px;color:#6b6560">监控 Region</h3>
