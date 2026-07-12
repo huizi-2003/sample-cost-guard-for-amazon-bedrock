@@ -205,56 +205,69 @@ tr:hover { background: #faf7f4; }
 </div>
 
 <!-- Tab 4: 配置管理 -->
-<div id="config" class="panel">
-  <h3>用量监控</h3>
-  <div style="display:flex;align-items:center;gap:12px;margin:8px 0 16px">
-    <label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer">
-      <input type="checkbox" id="monitor-toggle" onchange="saveMonitorEnabled()" style="opacity:0;width:0;height:0">
-      <span style="position:absolute;inset:0;background:#ccc;border-radius:24px;transition:.3s"></span>
-      <span style="position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.2)" id="monitor-toggle-dot"></span>
-    </label>
-    <span id="monitor-toggle-label" style="font-size:14px;font-weight:500">已开启</span>
+<div id="config" class="panel" style="background:transparent;border:none;padding:0;">
+
+  <!-- 卡片 1: 用量监控 -->
+  <div style="background:#fff;border:1px solid #e8e0d8;border-radius:12px;padding:24px;margin-bottom:20px">
+    <h3 style="margin:0 0 12px">用量监控</h3>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer">
+        <input type="checkbox" id="monitor-toggle" onchange="saveMonitorEnabled()" style="opacity:0;width:0;height:0">
+        <span style="position:absolute;inset:0;background:#ccc;border-radius:24px;transition:.3s"></span>
+        <span style="position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.2)" id="monitor-toggle-dot"></span>
+      </label>
+      <span id="monitor-toggle-label" style="font-size:14px;font-weight:500">已开启</span>
+      <span style="color:#6b6560;font-size:13px">关闭后停止 CloudWatch 数据采集和告警推送</span>
+    </div>
+    <h4 style="font-size:14px;font-weight:600;margin:0 0 8px;color:#2d2d2a">告警阈值</h4>
+    <p style="color:#6b6560;font-size:13px;margin:0 0 12px">预估费用超过阈值时触发告警。每 5 分钟检查三个窗口；未配置阈值时直接推送提醒。</p>
+    <div style="display:flex;gap:24px;margin:12px 0;flex-wrap:wrap;align-items:center">
+      <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">5 分钟窗口 ($)</label><input id="th-5min" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
+      <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">15 分钟窗口 ($)</label><input id="th-15min" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
+      <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">当日累计 ($)</label><input id="th-daily" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
+    </div>
+    <button class="btn" onclick="saveThresholds()">保存阈值</button>
+    <div id="th-msg"></div>
   </div>
-  <p style="color:#6b6560;font-size:13px;margin:-8px 0 20px">关闭后停止 CloudWatch 数据采集和告警推送，节省 GetMetricData 费用</p>
 
-  <h3>用量监控告警阈值</h3>
-  <p style="color:#6b6560;font-size:13px;margin:4px 0 12px">当预估费用（$）超过阈值时触发告警推送（单位：美元 $）。监控每 5 分钟运行一次，分别检查近 5 分钟、近 15 分钟、当日累计三个窗口的预估费用；未配置阈值时会直接推送提醒。</p>
-  <div style="display:flex;gap:24px;margin:12px 0;flex-wrap:wrap;align-items:center">
-    <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">5 分钟窗口 ($)</label><input id="th-5min" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
-    <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">15 分钟窗口 ($)</label><input id="th-15min" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
-    <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">当日累计 ($)</label><input id="th-daily" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
+  <!-- 卡片 2: 通知渠道配置 -->
+  <div style="background:#fff;border:1px solid #e8e0d8;border-radius:12px;padding:24px;margin-bottom:20px">
+    <h3 style="margin:0 0 8px">通知渠道配置</h3>
+    <p style="color:#6b6560;font-size:13px;margin:0 0 12px">支持配置多个推送渠道，如同时推送飞书和钉钉</p>
+    <div id="webhook-list"></div>
+    <button class="btn btn-secondary" onclick="addWebhookRow()" style="margin-top:8px">+ 添加渠道</button>
+    <button class="btn" onclick="saveWebhook()" style="margin-top:8px">保存</button>
+    <div id="wh-msg"></div>
   </div>
-  <button class="btn" onclick="saveThresholds()">保存阈值</button>
-  <div id="th-msg"></div>
 
-  <h3 style="margin-top:24px">通知渠道配置</h3>
-  <p style="color:#6b6560;font-size:13px;margin:4px 0 12px">支持配置多个推送渠道，如同时推送飞书和钉钉</p>
-  <div id="webhook-list"></div>
-  <button class="btn btn-secondary" onclick="addWebhookRow()" style="margin-top:8px">+ 添加渠道</button>
-  <button class="btn" onclick="saveWebhook()" style="margin-top:8px">保存</button>
-  <div id="wh-msg"></div>
-
-  <h3 style="margin-top:24px">每日账单推送策略
-    <span style="color:#c4442a;font-size:12px;font-weight:500;margin-left:8px">⚠ 用量告警受上方监控开关控制</span>
-  </h3>
-  <div style="display:flex;gap:16px;align-items:center;margin:8px 0;flex-wrap:wrap">
-    <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-      <input type="radio" name="notify-policy" value="always"> 每天推送
-    </label>
-    <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="工作日判断基于中国法定节假日（含调休上班）">
-      <input type="radio" name="notify-policy" value="workday"> 仅工作日推送
-      <span style="color:#999;font-size:11px">（法定节假日含调休）</span>
-    </label>
-    <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-      <input type="radio" name="notify-policy" value="never"> 不推送
-    </label>
-    <button class="btn" onclick="saveNotifyPolicy()" style="margin-left:auto">保存</button>
+  <!-- 卡片 3: 每日账单推送策略 -->
+  <div style="background:#fff;border:1px solid #e8e0d8;border-radius:12px;padding:24px;margin-bottom:20px">
+    <h3 style="margin:0 0 12px">每日账单推送策略
+      <span style="color:#c4442a;font-size:12px;font-weight:500;margin-left:8px">⚠ 用量告警受上方监控开关控制</span>
+    </h3>
+    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="radio" name="notify-policy" value="always"> 每天推送
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="工作日判断基于中国法定节假日（含调休上班）">
+        <input type="radio" name="notify-policy" value="workday"> 仅工作日推送
+        <span style="color:#999;font-size:11px">（法定节假日含调休）</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="radio" name="notify-policy" value="never"> 不推送
+      </label>
+      <button class="btn" onclick="saveNotifyPolicy()" style="margin-left:auto">保存</button>
+    </div>
+    <div id="np-msg"></div>
   </div>
-  <div id="np-msg"></div>
 
-  <h3 style="margin-top:24px;color:#6b6560">监控 Region</h3>
-  <p style="color:#999;font-size:13px;margin:4px 0 8px">以下 Region 正在被监控（系统自动配置，无需修改）</p>
-  <div id="regions-display" style="padding:10px;background:#faf7f4;border:1px solid #e8e0d8;border-radius:8px;font-family:monospace;font-size:12px;color:#6b6560;line-height:1.8"></div>
+  <!-- 卡片 4: 监控 Region -->
+  <div style="background:#fff;border:1px solid #e8e0d8;border-radius:12px;padding:24px">
+    <h3 style="margin:0 0 8px">监控 Region</h3>
+    <p style="color:#999;font-size:13px;margin:0 0 12px">以下 Region 正在被监控（系统自动配置，无需修改）</p>
+    <div id="regions-display" style="padding:10px;background:#faf7f4;border:1px solid #e8e0d8;border-radius:8px;font-family:monospace;font-size:12px;color:#6b6560;line-height:1.8"></div>
+  </div>
+
 </div>
     </div>
   </main>
