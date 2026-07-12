@@ -12,35 +12,75 @@ logger.setLevel(logging.INFO)
 
 API_TIMEOUT = Config(connect_timeout=10, read_timeout=30, retries={'max_attempts': 0})
 
-QUERIES_TOTAL = [
-    {'Id': 'search_bedrock', 'Expression': "SEARCH('{AWS/Bedrock,ModelId} TokenCount', 'Sum', 300)", 'ReturnData': False},
-    {'Id': 'bedrock_total', 'Expression': 'SUM(search_bedrock)', 'ReturnData': True},
-    {'Id': 'mantle_in', 'MetricStat': {'Metric': {'Namespace': 'AWS/BedrockMantle', 'MetricName': 'TotalInputTokens', 'Dimensions': []}, 'Period': 300, 'Stat': 'Sum'}, 'ReturnData': False},
-    {'Id': 'mantle_out', 'MetricStat': {'Metric': {'Namespace': 'AWS/BedrockMantle', 'MetricName': 'TotalOutputTokens', 'Dimensions': []}, 'Period': 300, 'Stat': 'Sum'}, 'ReturnData': False},
-    {'Id': 'mantle_total', 'Expression': 'FILL(mantle_in,0) + FILL(mantle_out,0)', 'ReturnData': True},
+# 单次拉取：直接读两个 namespace 的原始 per-model SEARCH（都 ReturnData=True）。
+# 一条查询（start_daily→now, Period=300）即可同时算出 5min/15min/daily 总量与每模型明细，
+# 取代旧的 QUERIES_TOTAL + QUERIES_DETAIL 两遍扫描（每 region 每周期 2 次 → 1 次，约省 50%）。
+# 口径已用真实数据验证与旧实现等价：
+#   - bedrock 总量 = 各 per-model TokenCount 之和（与旧 SUM(SEARCH) 同一表达式，恒等）
+#   - mantle 总量 = 各 per-model (TotalInputTokens+TotalOutputTokens) 之和，
+#     与旧的账户级空维度聚合口径在真实数据上精确相等
+QUERIES = [
+    {'Id': 'bedrock', 'Expression': "SEARCH('{AWS/Bedrock,ModelId} TokenCount', 'Sum', 300)", 'ReturnData': True},
+    {'Id': 'mantle', 'Expression': "SEARCH('{AWS/BedrockMantle,Model} Tokens', 'Sum', 300)", 'ReturnData': True},
 ]
 
-QUERIES_DETAIL = [
-    {'Id': 'detail_bedrock', 'Expression': "SEARCH('{AWS/Bedrock,ModelId} TokenCount', 'Sum', 300)", 'ReturnData': True},
-    {'Id': 'detail_mantle', 'Expression': "SEARCH('{AWS/BedrockMantle,Model} Tokens', 'Sum', 300)", 'ReturnData': True},
-]
+TOKEN_TYPES = ('input', 'output', 'cache_read', 'cache_write')
+
+
+def _add_model(bucket, model_name, token_type, val):
+    """把一个数据点累加进 {model: {input/output/cache_read/cache_write}} 明细桶。"""
+    if model_name not in bucket:
+        bucket[model_name] = {t: 0 for t in TOKEN_TYPES}
+    bucket[model_name][token_type] += val
 
 
 def fetch_region(region, start_daily, start_15min, start_5min, end):
+    """单次拉取（含 NextToken 分页）算出该 region 的 5min/15min/daily 总量，
+    以及各窗口的每模型每类型明细。取代旧的 fetch_region + fetch_detail 两遍扫描。
+
+    - 查询窗口固定为 start_daily→now：它是旧明细查询窗口的超集，因此按 ts>=阈值
+      过滤即可精确复现旧的 daily/15min/5min 总量及 5min 每模型明细，无数值漂移
+      （旧 fetch_detail 里向前对齐一个 Period 的 hack 因此不再需要）。
+    - Period=300 下 CloudWatch 只返回有数据的桶，缺失桶不返回；token 计数恒非负，
+      跳过 0 值不影响总量，且避免为 0 创建空模型项（与旧 fetch_detail 行为一致）。
+    - NextToken 循环：改读原始 per-model SEARCH 后单页可能超过 10.08 万数据点上限
+      （当前规模远未触及），加分页循环做防御。
+    """
     session = boto3.session.Session()
     cw = session.client('cloudwatch', region_name=region, config=API_TIMEOUT)
-    resp = cw.get_metric_data(MetricDataQueries=QUERIES_TOTAL, StartTime=start_daily, EndTime=end)
-    total_5min = 0
-    total_15min = 0
-    total_daily = 0
-    for r in resp['MetricDataResults']:
-        for ts, val in zip(r['Timestamps'], r['Values']):
-            total_daily += val
-            if ts >= start_15min:
-                total_15min += val
-            if ts >= start_5min:
-                total_5min += val
-    return {'region': region, '5min': total_5min, '15min': total_15min, 'daily': total_daily}
+
+    total = {'5min': 0, '15min': 0, 'daily': 0}
+    models = {'5min': {}, '15min': {}, 'daily': {}}
+
+    next_token = None
+    while True:
+        kwargs = {'MetricDataQueries': QUERIES, 'StartTime': start_daily, 'EndTime': end}
+        if next_token:
+            kwargs['NextToken'] = next_token
+        resp = cw.get_metric_data(**kwargs)
+        for r in resp['MetricDataResults']:
+            model_name = extract_model_name(r['Label'])
+            token_type = extract_token_type(r['Label'])
+            for ts, val in zip(r['Timestamps'], r['Values']):
+                if val <= 0:
+                    continue
+                total['daily'] += val
+                _add_model(models['daily'], model_name, token_type, val)
+                if ts >= start_15min:
+                    total['15min'] += val
+                    _add_model(models['15min'], model_name, token_type, val)
+                if ts >= start_5min:
+                    total['5min'] += val
+                    _add_model(models['5min'], model_name, token_type, val)
+        next_token = resp.get('NextToken')
+        if not next_token:
+            break
+
+    return {
+        'region': region,
+        '5min': total['5min'], '15min': total['15min'], 'daily': total['daily'],
+        'models': models,
+    }
 
 
 def extract_model_name(label):
@@ -66,33 +106,6 @@ def extract_token_type(label):
         return 'output'
     # 默认归为 input（InputTokenCount, TotalInputTokens, 或无法识别的）
     return 'input'
-
-
-DETAIL_PERIOD = 300  # 明细查询的 Period（秒），与 QUERIES_DETAIL 中的 300 对齐
-
-
-def fetch_detail(region, start, end):
-    """返回 {model_name: {input:x, output:y, cache_read:z, cache_write:w}} 按类型拆分的明细。"""
-    # CloudWatch Period 桶按整 5 分钟边界对齐。提醒窗口（如 now-5min ~ now）
-    # 又窄又不对齐，且指标有发布延迟，直接查常常拿不到完整的桶。
-    # 这里把 start 向下对齐到 Period 边界、再往前多取一个 Period，保证至少覆盖
-    # 一个完整的桶；实际归属仍用 ts >= start 过滤。
-    aligned_start = datetime.fromtimestamp(
-        (int(start.timestamp()) // DETAIL_PERIOD - 1) * DETAIL_PERIOD, tz=timezone.utc
-    )
-    session = boto3.session.Session()
-    cw = session.client('cloudwatch', region_name=region, config=API_TIMEOUT)
-    resp = cw.get_metric_data(MetricDataQueries=QUERIES_DETAIL, StartTime=aligned_start, EndTime=end)
-    models = {}
-    for r in resp['MetricDataResults']:
-        model_name = extract_model_name(r['Label'])
-        token_type = extract_token_type(r['Label'])
-        for ts, val in zip(r['Timestamps'], r['Values']):
-            if ts >= start and val > 0:
-                if model_name not in models:
-                    models[model_name] = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}
-                models[model_name][token_type] += val
-    return models
 
 
 def should_suppress(window, now, webhooks):
@@ -168,20 +181,15 @@ def handler(event, context):
             utc_time = now.strftime('%H:%M')
             expire_at = int((now + timedelta(days=2)).timestamp())
 
-            # 查询所有 region 的模型明细（5min 窗口）
+            # 模型明细（5min 窗口）直接由本轮 fetch_region 已拉取的数据聚合，
+            # 无需再查一次 CloudWatch（旧实现在这里对所有 region 又扫了一遍）
             all_models_5min = {}
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {executor.submit(fetch_detail, r['region'], start_5min, now): r['region'] for r in region_results}
-                for future in as_completed(futures):
-                    try:
-                        models = future.result()
-                        for model_name, type_counts in models.items():
-                            if model_name not in all_models_5min:
-                                all_models_5min[model_name] = {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}
-                            for token_type, val in type_counts.items():
-                                all_models_5min[model_name][token_type] += int(val)
-                    except Exception:
-                        pass
+            for r in region_results:
+                for model_name, type_counts in (r.get('models') or {}).get('5min', {}).items():
+                    if model_name not in all_models_5min:
+                        all_models_5min[model_name] = {t: 0 for t in TOKEN_TYPES}
+                    for token_type, val in type_counts.items():
+                        all_models_5min[model_name][token_type] += int(val)
 
             put_item(
                 f'MONITOR#{utc_date}',
@@ -211,19 +219,15 @@ def handler(event, context):
 
     if alerts:
         alert = alerts[0]
-        detail_start = {'5min': start_5min, '15min': start_15min, 'daily': start_daily}[alert['window']]
-        top_regions = sorted(region_results, key=lambda r: r[alert['window']], reverse=True)[:5]
+        window = alert['window']
+        top_regions = sorted(region_results, key=lambda r: r[window], reverse=True)[:5]
 
+        # 模型明细直接取本轮已拉取的对应窗口数据，无需再查 CloudWatch
         all_models = {}
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = {executor.submit(fetch_detail, r['region'], detail_start, now): r['region'] for r in top_regions if r[alert['window']] > 0}
-            for future in as_completed(futures):
-                try:
-                    models = future.result()
-                    for model_name, type_counts in models.items():
-                        all_models[model_name] = all_models.get(model_name, 0) + sum(type_counts.values())
-                except Exception as e:
-                    logger.warning(f"Detail fetch failed: {e}")
+        for r in top_regions:
+            if r[window] > 0:
+                for model_name, type_counts in (r.get('models') or {}).get(window, {}).items():
+                    all_models[model_name] = all_models.get(model_name, 0) + sum(type_counts.values())
 
         top_models = sorted(all_models.items(), key=lambda x: x[1], reverse=True)[:5]
 

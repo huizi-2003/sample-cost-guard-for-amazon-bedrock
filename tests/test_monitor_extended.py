@@ -5,13 +5,13 @@ Covers:
 - should_suppress: alert suppression logic for 5min/15min/daily windows
 - mark_alerted: state writing
 - Alert triggering: threshold checks, multi-region failure alert
-- fetch_detail: time alignment logic
+- fetch_region: single-pass totals + per-window per-model detail, NextToken pagination
 """
 import pytest
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock, call
 
-from monitor.handler import extract_model_name, extract_token_type, should_suppress, mark_alerted, DETAIL_PERIOD
+from monitor.handler import extract_model_name, extract_token_type, should_suppress, mark_alerted
 
 
 # === extract_model_name tests (formerly clean_label) ===
@@ -198,14 +198,12 @@ class TestHandlerAlerts:
              patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook.example.com', 'type': 'feishu'}]), \
              patch('monitor.handler.put_item') as mock_put, \
              patch('monitor.handler.fetch_region') as mock_fetch, \
-             patch('monitor.handler.fetch_detail', return_value={}) as mock_detail, \
              patch('monitor.handler.send_webhook_all') as mock_send, \
              patch('monitor.handler.get_alert_state', return_value=None), \
              patch('monitor.handler.set_alert_state'):
             yield {
                 'put_item': mock_put,
                 'fetch_region': mock_fetch,
-                'fetch_detail': mock_detail,
                 'send_webhook_all': mock_send,
             }
 
@@ -263,28 +261,106 @@ class TestHandlerAlerts:
         assert 'Region' in mock_send.call_args[0][0]
 
 
-# === fetch_detail time alignment ===
+# === fetch_region single-pass: totals + per-window detail + pagination ===
 
 
-class TestFetchDetailAlignment:
-    """fetch_detail aligns start time to Period boundary."""
+def _bedrock_series(model, token_metric, timestamps, values):
+    """构造一条 AWS/Bedrock SEARCH 返回的 MetricDataResult。"""
+    return {
+        'Id': 'bedrock',
+        'Label': f'AWS/Bedrock {model} {token_metric}',
+        'Timestamps': list(timestamps),
+        'Values': list(values),
+    }
 
-    @patch('monitor.handler.boto3.session.Session')
-    def test_start_aligned_to_period_boundary(self, mock_session_cls):
-        """Start time should be aligned down to Period boundary minus one period."""
+
+class TestFetchRegionSinglePass:
+    """fetch_region 一次拉取即算出 5min/15min/daily 总量与各窗口每模型明细。"""
+
+    def _run(self, pages):
+        """用给定的分页响应驱动 fetch_region，返回结果。pages 为多页 MetricDataResults 列表。"""
         mock_cw = MagicMock()
-        mock_cw.get_metric_data.return_value = {'MetricDataResults': []}
-        mock_session_cls.return_value.client.return_value = mock_cw
+        responses = []
+        for i, results in enumerate(pages):
+            resp = {'MetricDataResults': results}
+            if i < len(pages) - 1:
+                resp['NextToken'] = f'tok{i}'
+            responses.append(resp)
+        mock_cw.get_metric_data.side_effect = responses
 
-        from monitor.handler import fetch_detail
-        # 12:03:45 → aligned to floor(12:03:45 / 300s) - 1 period = 12:00:00 - 5min = 11:55:00
-        start = datetime(2024, 7, 1, 12, 3, 45, tzinfo=timezone.utc)
-        end = datetime(2024, 7, 1, 12, 5, 0, tzinfo=timezone.utc)
-        fetch_detail('us-east-1', start, end)
+        # 固定窗口：now=12:12:00，start_daily=00:00, start_15min=11:57, start_5min=12:07
+        now = datetime(2024, 7, 1, 12, 12, 0, tzinfo=timezone.utc)
+        start_daily = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_15min = now - timedelta(minutes=15)
+        start_5min = now - timedelta(minutes=5)
 
-        call_kwargs = mock_cw.get_metric_data.call_args[1]
-        aligned_start = call_kwargs['StartTime']
-        # aligned_start should be at a 5-minute boundary before start
-        assert aligned_start.second == 0
-        assert aligned_start < start
-        assert (int(aligned_start.timestamp()) % DETAIL_PERIOD) == 0
+        with patch('monitor.handler.boto3.session.Session') as mock_session_cls:
+            mock_session_cls.return_value.client.return_value = mock_cw
+            from monitor.handler import fetch_region
+            result = fetch_region('us-east-1', start_daily, start_15min, start_5min, now)
+        return result, mock_cw
+
+    def test_windows_bucketed_by_timestamp(self):
+        """同一模型跨三个时间段的数据点，应正确归入 daily/15min/5min 三个窗口。"""
+        t_daily = datetime(2024, 7, 1, 3, 0, 0, tzinfo=timezone.utc)    # 只进 daily
+        t_15min = datetime(2024, 7, 1, 12, 0, 0, tzinfo=timezone.utc)   # 进 daily+15min
+        t_5min = datetime(2024, 7, 1, 12, 10, 0, tzinfo=timezone.utc)   # 进全部三个
+        series = _bedrock_series('claude-sonnet-4', 'InputTokenCount',
+                                 [t_daily, t_15min, t_5min], [100, 20, 5])
+        result, _ = self._run([[series]])
+
+        assert result['daily'] == 125   # 100+20+5
+        assert result['15min'] == 25    # 20+5
+        assert result['5min'] == 5      # 5
+        assert result['models']['daily']['claude-sonnet-4']['input'] == 125
+        assert result['models']['15min']['claude-sonnet-4']['input'] == 25
+        assert result['models']['5min']['claude-sonnet-4']['input'] == 5
+
+    def test_total_equals_sum_of_per_model_series(self):
+        """总量 = 所有 per-model 序列（含 cache 类型、多模型）之和，验证合并口径。"""
+        t = datetime(2024, 7, 1, 12, 10, 0, tzinfo=timezone.utc)  # 落在 5min 窗口
+        series = [
+            _bedrock_series('claude-sonnet-4', 'InputTokenCount', [t], [10]),
+            _bedrock_series('claude-sonnet-4', 'OutputTokenCount', [t], [4]),
+            _bedrock_series('claude-sonnet-4', 'CacheReadInputTokenCount', [t], [3]),
+            _bedrock_series('claude-sonnet-4', 'CacheWriteInputTokenCount', [t], [2]),
+            _bedrock_series('claude-opus-4', 'InputTokenCount', [t], [1]),
+            {'Id': 'mantle', 'Label': 'AWS/BedrockMantle openai.gpt-5 TotalInputTokens', 'Timestamps': [t], 'Values': [7]},
+            {'Id': 'mantle', 'Label': 'AWS/BedrockMantle openai.gpt-5 TotalOutputTokens', 'Timestamps': [t], 'Values': [6]},
+        ]
+        result, _ = self._run([series])
+
+        # 总量应等于全部序列之和，且 cache 计入总量
+        assert result['5min'] == 10 + 4 + 3 + 2 + 1 + 7 + 6  # 33
+        # 每模型每类型明细正确
+        sonnet = result['models']['5min']['claude-sonnet-4']
+        assert sonnet == {'input': 10, 'output': 4, 'cache_read': 3, 'cache_write': 2}
+        assert result['models']['5min']['claude-opus-4']['input'] == 1
+        # mantle 按模型拆分，TotalInputTokens→input, TotalOutputTokens→output
+        gpt = result['models']['5min']['openai.gpt-5']
+        assert gpt['input'] == 7 and gpt['output'] == 6
+
+    def test_zero_values_skipped(self):
+        """值为 0 的数据点不计入总量，也不创建空模型项。"""
+        t = datetime(2024, 7, 1, 12, 10, 0, tzinfo=timezone.utc)
+        series = _bedrock_series('claude-zero', 'InputTokenCount', [t], [0])
+        result, _ = self._run([[series]])
+        assert result['5min'] == 0
+        assert 'claude-zero' not in result['models']['5min']
+
+    def test_nexttoken_pagination_consumed(self):
+        """跨两页返回的数据都应被累加（NextToken 循环）。"""
+        t = datetime(2024, 7, 1, 12, 10, 0, tzinfo=timezone.utc)
+        page1 = [_bedrock_series('claude-sonnet-4', 'InputTokenCount', [t], [10])]
+        page2 = [_bedrock_series('claude-opus-4', 'InputTokenCount', [t], [30])]
+        result, mock_cw = self._run([page1, page2])
+
+        # 两页都被消费
+        assert mock_cw.get_metric_data.call_count == 2
+        # 第二次调用带上了第一页返回的 NextToken
+        second_call_kwargs = mock_cw.get_metric_data.call_args_list[1][1]
+        assert second_call_kwargs.get('NextToken') == 'tok0'
+        # 两页数据都计入总量与明细
+        assert result['5min'] == 40
+        assert result['models']['5min']['claude-sonnet-4']['input'] == 10
+        assert result['models']['5min']['claude-opus-4']['input'] == 30
