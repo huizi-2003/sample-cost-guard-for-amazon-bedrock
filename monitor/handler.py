@@ -142,8 +142,15 @@ def handler(event, context):
                 logger.warning(f"Region {region} failed: {e}")
                 failed_regions.append(region)
 
+    # region 查询失败会让其 token 从总量中缺失，导致成本被低估、真实超阈值可能不告警。
+    # >3 个失败视为紧急，每轮都发；1~3 个失败每日去重发一次低调提醒，避免抖动刷屏。
     if len(failed_regions) > 3:
         send_webhook_all(f"[Bedrock 监控] 账号 {get_account_id()} | 异常：{len(failed_regions)} 个 Region 查询失败: {', '.join(failed_regions[:10])}", webhooks)
+    elif failed_regions:
+        today = now.strftime('%Y-%m-%d')
+        if get_alert_state('region_fetch_failed') != today:
+            send_webhook_all(f"[Bedrock 监控] 账号 {get_account_id()} | 提醒：{len(failed_regions)} 个 Region 查询失败: {', '.join(failed_regions)}，今日预估费用可能偏低", webhooks)
+            set_alert_state('region_fetch_failed', today)
 
     total_5min = sum(r['5min'] for r in region_results)
     total_15min = sum(r['15min'] for r in region_results)
@@ -252,6 +259,8 @@ def handler(event, context):
                 msg += f"  {label}: ${mc:,.2f}\n"
         if unpriced[window]:
             msg += f"\n⚠ 未定价模型（预估已低估，请在 common/pricing.py 补价）: {', '.join(sorted(unpriced[window]))}\n"
+        if failed_regions:
+            msg += f"\n⚠ 本次有 {len(failed_regions)} 个 Region 查询失败（{', '.join(failed_regions[:10])}），实际费用可能高于上述预估\n"
 
         send_webhook_all(msg, webhooks)
         for a in alerts:

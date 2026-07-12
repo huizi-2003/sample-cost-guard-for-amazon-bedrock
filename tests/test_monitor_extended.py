@@ -259,6 +259,39 @@ class TestHandlerAlerts:
         failure_alerts = [c for c in calls if '查询失败' in c[0][0]]
         assert len(failure_alerts) >= 1
 
+    def test_few_region_failures_send_daily_deduped_notice(self, mock_env):
+        """#3：1~3 个 region 失败时也发一次每日去重提醒（原先 <=3 完全静默）。"""
+        def fetch(region, *args, **kwargs):
+            if region == 'us-west-2':
+                raise Exception("timeout")
+            return {'region': region, '5min': 100, '15min': 400, 'daily': 900,
+                    'models': {'5min': {}, '15min': {}, 'daily': {}}}
+        mock_env['fetch_region'].side_effect = fetch
+        from monitor.handler import handler
+        handler({}, None)
+
+        calls = mock_env['send_webhook_all'].call_args_list
+        notices = [c for c in calls if 'us-west-2' in c[0][0] and '费用可能偏低' in c[0][0]]
+        assert len(notices) == 1
+
+    def test_cost_alert_annotates_failed_regions(self, mock_env):
+        """#3：成本告警文案标注有 region 数据缺失、实际费用可能更高。"""
+        models = {'claude-sonnet-4': {'input': 0, 'output': 1_000_000, 'cache_read': 0, 'cache_write': 0}}
+        def fetch(region, *args, **kwargs):
+            if region == 'us-west-2':
+                raise Exception("timeout")
+            return {'region': region, '5min': 1_000_000, '15min': 400, 'daily': 900,
+                    'models': {'5min': models, '15min': {}, 'daily': models}}
+        mock_env['fetch_region'].side_effect = fetch
+        with patch('monitor.handler.get_cost_thresholds', return_value={'5min': 10, '15min': 1e12, 'daily': 1e12}):
+            from monitor.handler import handler
+            handler({}, None)
+
+        calls = mock_env['send_webhook_all'].call_args_list
+        cost_alerts = [c for c in calls if '费用提醒' in c[0][0]]
+        assert len(cost_alerts) == 1
+        assert 'Region 查询失败' in cost_alerts[0][0][0]
+
     def test_threshold_read_failure_sends_alert(self):
         """When cost threshold read fails, an alert is sent and handler returns 500."""
         with patch('monitor.handler.get_cost_thresholds', side_effect=Exception("DDB timeout")), \
