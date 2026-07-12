@@ -7,17 +7,18 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Söhne', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f9f5f1; color: #2d2d2a; }
-.header { background: #fff; padding: 10px 24px; border-bottom: 1px solid #e8e0d8; }
-.header-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: flex-start; gap: 28px; flex-wrap: wrap; }
-.header h1 { color: #2d2d2a; font-size: 18px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; }
+.layout { display: flex; align-items: stretch; min-height: 100vh; }
+.sidebar { width: 220px; flex-shrink: 0; background: #fff; border-right: 1px solid #e8e0d8; padding: 22px 14px; display: flex; flex-direction: column; gap: 26px; position: sticky; top: 0; align-self: flex-start; height: 100vh; }
+.brand h1 { color: #2d2d2a; font-size: 17px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; line-height: 1.35; }
+.main { flex: 1; min-width: 0; }
 .info-wrap { position: relative; display: inline-flex; align-items: center; }
 .info-icon { color: #6b6560; font-size: 11px; font-weight: 600; font-style: normal; cursor: pointer; user-select: none; border: 1px solid #d4cdc4; border-radius: 50%; width: 15px; height: 15px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
 .info-icon:hover { color: #b5651d; border-color: #b5651d; }
 .info-pop { display: none; position: absolute; top: 24px; left: 0; z-index: 100; background: #2d2d2a; color: #fff; font-size: 12px; font-weight: 400; line-height: 1.5; padding: 8px 12px; border-radius: 8px; width: max-content; max-width: 300px; box-shadow: 0 4px 12px rgba(0,0,0,0.18); }
 .info-wrap.open .info-pop, .info-wrap:hover .info-pop { display: block; }
 .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
-.tabs { display: flex; gap: 0; margin: 0; background: #faf7f4; border-radius: 12px; padding: 4px; border: 1px solid #e8e0d8; }
-.tab { padding: 10px 20px; cursor: pointer; border-radius: 8px; color: #6b6560; font-size: 14px; font-weight: 500; transition: all 0.2s; border: none; }
+.tabs { display: flex; flex-direction: column; gap: 4px; margin: 0; background: transparent; border-radius: 0; padding: 0; border: none; }
+.tab { padding: 10px 14px; cursor: pointer; border-radius: 8px; color: #6b6560; font-size: 14px; font-weight: 500; transition: all 0.2s; border: none; text-align: left; }
 .tab:hover { color: #2d2d2a; background: #f9f5f1; }
 .tab.active { color: #2d2d2a; background: #f0ebe4; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
 .panel { display: none; background: #fff; border-radius: 12px; padding: 28px; border: 1px solid #e8e0d8; }
@@ -63,21 +64,32 @@ tr:hover { background: #faf7f4; }
 .overview-cards .card .label { font-size: 13px; color: #6b6560; margin-top: 6px; }
 .overview-cards .card .change-up { color: #c4442a; font-size: 14px; font-weight: 600; }
 .overview-cards .card .change-down { color: #2d8659; font-size: 14px; font-weight: 600; }
+
+/* Responsive: collapse sidebar to a top bar on narrow screens */
+@media (max-width: 768px) {
+  .layout { flex-direction: column; }
+  .sidebar { width: auto; height: auto; position: static; border-right: none; border-bottom: 1px solid #e8e0d8; flex-direction: row; align-items: center; gap: 16px; padding: 12px 16px; overflow-x: auto; }
+  .brand h1 { font-size: 16px; white-space: nowrap; }
+  .tabs { flex-direction: row; gap: 4px; }
+  .tab { white-space: nowrap; }
+}
 </style>
 </head>
 <body>
-<div class="header">
-  <div class="header-inner">
-    <h1>Bedrock Cost Guard<span class="info-wrap"><span class="info-icon" onclick="toggleInfo(event)">i</span><span class="info-pop">数据来源 Cost Explorer，通常延迟 1~2 天，最近 1-2 天的数据可能不完整</span></span></h1>
-    <div class="tabs">
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <h1>Bedrock Cost Guard<span class="info-wrap"><span class="info-icon" onclick="toggleInfo(event)">i</span><span class="info-pop">数据来源 Cost Explorer，通常延迟 1~2 天，最近 1-2 天的数据可能不完整</span></span></h1>
+    </div>
+    <nav class="tabs">
       <div class="tab active" data-panel="overview">费用总览</div>
       <div class="tab" data-panel="reconcile">历史对账</div>
       <div class="tab" data-panel="monitor">今日监控</div>
       <div class="tab" data-panel="config">配置管理</div>
-    </div>
-  </div>
-</div>
-<div class="container">
+    </nav>
+  </aside>
+  <main class="main">
+    <div class="container">
 
 <!-- Tab 1: 费用总览 -->
 <div id="overview" class="panel active">
@@ -199,6 +211,8 @@ tr:hover { background: #faf7f4; }
   <p style="color:#999;font-size:13px;margin:4px 0 8px">以下 Region 正在被监控（系统自动配置，无需修改）</p>
   <div id="regions-display" style="padding:10px;background:#faf7f4;border:1px solid #e8e0d8;border-radius:8px;font-family:monospace;font-size:12px;color:#6b6560;line-height:1.8"></div>
 </div>
+    </div>
+  </main>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
