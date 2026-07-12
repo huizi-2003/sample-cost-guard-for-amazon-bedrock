@@ -47,11 +47,6 @@ tr:hover { background: #faf7f4; }
 .summary-card .label { font-size: 13px; color: #6b6560; margin-top: 4px; }
 .msg { padding: 8px 12px; margin: 8px 0; border-radius: 8px; background: #f0ebe4; color: #2d2d2a; border: 1px solid #d4cdc4; }
 
-/* Compare bar */
-.compare-bar { background: #faf7f4; border: 1px solid #e8e0d8; border-radius: 10px; padding: 12px 24px; display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 16px; font-size: 15px; }
-.compare-bar .up { color: #c4442a; font-weight: 600; }
-.compare-bar .down { color: #2d8659; font-weight: 600; }
-
 /* Chart row - two columns */
 .chart-row { display: flex; gap: 24px; margin-top: 24px; }
 .chart-row > div { flex: 1; min-width: 0; position: relative; }
@@ -95,7 +90,6 @@ tr:hover { background: #faf7f4; }
 
 <!-- Tab 2: 历史对账 -->
 <div id="reconcile" class="panel">
-  <div class="compare-bar" id="reconcile-compare" style="display:none;"></div>
   <div class="date-nav">
     <label>日期：</label>
     <select id="date-select"></select>
@@ -372,29 +366,6 @@ async function loadDates() {
   sel.innerHTML = dates.map(d => `<option value="${d}">${d}</option>`).join('');
   if (dates.length) loadReconcile(dates[0]);
   sel.onchange = () => loadReconcile(sel.value);
-  loadReconcileCompare();
-}
-
-async function loadReconcileCompare() {
-  try {
-    const resp = await fetch(`${API}/api/reconcile/summary?days=2`);
-    const data = await resp.json();
-    const days = data.daily_costs || [];
-    const bar = document.getElementById('reconcile-compare');
-    if (days.length >= 2) {
-      const yesterday = days[days.length - 1].cost || 0;
-      const dayBefore = days[days.length - 2].cost || 0;
-      const pct = dayBefore > 0 ? ((yesterday - dayBefore) / dayBefore * 100) : 0;
-      const arrow = pct >= 0 ? '▲' : '▼';
-      const cls = pct >= 0 ? 'up' : 'down';
-      bar.innerHTML = `昨日 <strong>$${yesterday.toFixed(2)}</strong> → 前日 <strong>$${dayBefore.toFixed(2)}</strong> (<span class="${cls}">${arrow} ${Math.abs(pct).toFixed(1)}%</span>)`;
-      bar.style.display = 'flex';
-    } else {
-      bar.style.display = 'none';
-    }
-  } catch (e) {
-    document.getElementById('reconcile-compare').style.display = 'none';
-  }
 }
 
 async function loadReconcile(date) {
