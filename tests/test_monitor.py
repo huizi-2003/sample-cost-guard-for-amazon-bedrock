@@ -20,7 +20,8 @@ MOCK_PATCHES = {
 @pytest.fixture
 def mock_env():
     """Set up common mocks for monitor handler tests."""
-    with patch('monitor.handler.get_cost_thresholds', return_value=MOCK_PATCHES['monitor.handler.get_cost_thresholds']), \
+    with patch('monitor.handler.get_monitor_enabled', return_value=True), \
+         patch('monitor.handler.get_cost_thresholds', return_value=MOCK_PATCHES['monitor.handler.get_cost_thresholds']), \
          patch('monitor.handler.get_regions', return_value=MOCK_PATCHES['monitor.handler.get_regions']), \
          patch('monitor.handler.get_webhook_config', return_value=MOCK_PATCHES['monitor.handler.get_webhook_config']), \
          patch('monitor.handler.put_item') as mock_put_item, \

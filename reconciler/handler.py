@@ -481,12 +481,15 @@ def handler(event, context):
         else:
             combined += r['msg']
 
-    # 推送策略判断：workday 模式下非工作日跳过推送（对账照常执行，数据不丢）
+    # 推送策略判断
     notify_policy = get_notify_policy()
     beijing_now = now.astimezone(BEIJING_TZ)
     should_notify = True
 
-    if notify_policy == 'workday':
+    if notify_policy == 'never':
+        should_notify = False
+        logger.info("Notify policy is 'never', skipping notification")
+    elif notify_policy == 'workday':
         should_notify = is_workday(beijing_now.date())
         if not should_notify:
             logger.info(f"Notify policy is 'workday' and today ({beijing_now.strftime('%Y-%m-%d')}) is not a workday, skipping notification")

@@ -19,7 +19,8 @@ from common.config import (
     get_cost_thresholds, get_regions, get_reconcile_by_date,
     get_reconcile_dates, put_item, get_item, query_by_pk,
     get_webhook_config, save_webhook_config,
-    get_notify_policy, save_notify_policy
+    get_notify_policy, save_notify_policy,
+    get_monitor_enabled, save_monitor_enabled
 )
 from common.pricing import PRICING, match_pricing as _match_pricing
 from common.labels import (
@@ -525,6 +526,23 @@ async def put_config_webhook(request: Request):
     return {'ok': True, 'count': len(cleaned)}
 
 
+@app.get('/api/config/monitor-enabled')
+async def get_config_monitor_enabled():
+    """获取用量监控总开关状态"""
+    return {'enabled': get_monitor_enabled()}
+
+
+@app.put('/api/config/monitor-enabled')
+async def put_config_monitor_enabled(request: Request):
+    """设置用量监控总开关"""
+    data = await request.json()
+    enabled = data.get('enabled')
+    if not isinstance(enabled, bool):
+        return JSONResponse({'error': "enabled must be a boolean"}, status_code=400)
+    save_monitor_enabled(enabled)
+    return {'ok': True, 'enabled': enabled}
+
+
 @app.get('/api/config/notify-policy')
 async def get_config_notify_policy():
     """获取日报推送策略"""
@@ -533,11 +551,11 @@ async def get_config_notify_policy():
 
 @app.put('/api/config/notify-policy')
 async def put_config_notify_policy(request: Request):
-    """设置日报推送策略：always（每天）或 workday（仅工作日）"""
+    """设置日报推送策略：always（每天）、workday（仅工作日）或 never（不推送）"""
     data = await request.json()
     policy = data.get('policy', '').strip()
-    if policy not in ('always', 'workday'):
-        return JSONResponse({'error': "policy must be 'always' or 'workday'"}, status_code=400)
+    if policy not in ('always', 'workday', 'never'):
+        return JSONResponse({'error': "policy must be 'always', 'workday' or 'never'"}, status_code=400)
     save_notify_policy(policy)
     return {'ok': True, 'policy': policy}
 

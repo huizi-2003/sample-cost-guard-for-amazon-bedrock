@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
-from common.config import get_cost_thresholds, get_regions, get_alert_state, set_alert_state, get_webhook_config, put_item, get_account_id
+from common.config import get_cost_thresholds, get_regions, get_alert_state, set_alert_state, get_webhook_config, put_item, get_account_id, get_monitor_enabled
 from common.pricing import estimate_cost
 from common.webhook import send_webhook_all
 from common.labels import extract_model_name, extract_token_type
@@ -111,6 +111,11 @@ def mark_alerted(window, now):
 
 
 def handler(event, context):
+    # 总开关检查：关闭时跳过全部监控逻辑（省 CloudWatch 费用）
+    if not get_monitor_enabled():
+        logger.info("Monitor disabled via config, skipping")
+        return {'statusCode': 200, 'skipped': True, 'reason': 'monitor_disabled'}
+
     now = datetime.now(timezone.utc)
     start_daily = now.replace(hour=0, minute=0, second=0, microsecond=0)
     start_15min = now - timedelta(minutes=15)

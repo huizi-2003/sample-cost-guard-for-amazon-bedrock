@@ -130,15 +130,32 @@ def save_webhook_config(items):
     put_item('CONFIG', 'webhooks', items=items)
 
 
+def get_monitor_enabled():
+    """用量监控总开关。True=开启（默认），False=关闭。
+
+    key 不存在视为开启（首次部署无需手动写配置），DDB 异常向上抛出。
+    """
+    item = get_item('CONFIG', 'monitor_enabled')
+    if item and item.get('value') == 'false':
+        return False
+    return True
+
+
+def save_monitor_enabled(enabled: bool):
+    """保存用量监控总开关状态。"""
+    put_item('CONFIG', 'monitor_enabled', value='true' if enabled else 'false')
+
+
 def get_notify_policy():
     """获取日报推送策略。
 
     返回值:
         'always'  — 每天推送
         'workday' — 仅工作日推送（基于中国法定节假日）
+        'never'   — 不推送
     """
     item = get_item('CONFIG', 'notify_policy')
-    if item and item.get('value') in ('always', 'workday'):
+    if item and item.get('value') in ('always', 'workday', 'never'):
         return item['value']
     return 'always'
 
@@ -147,10 +164,10 @@ def save_notify_policy(policy):
     """保存日报推送策略。
 
     Args:
-        policy: 'always' 或 'workday'
+        policy: 'always'、'workday' 或 'never'
     """
-    if policy not in ('always', 'workday'):
-        raise ValueError(f"Invalid notify_policy: {policy}, must be 'always' or 'workday'")
+    if policy not in ('always', 'workday', 'never'):
+        raise ValueError(f"Invalid notify_policy: {policy}, must be 'always', 'workday' or 'never'")
     put_item('CONFIG', 'notify_policy', value=policy)
 
 

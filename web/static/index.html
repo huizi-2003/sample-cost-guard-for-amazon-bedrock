@@ -205,6 +205,17 @@ tr:hover { background: #faf7f4; }
 
 <!-- Tab 4: 配置管理 -->
 <div id="config" class="panel">
+  <h3>用量监控</h3>
+  <div style="display:flex;align-items:center;gap:12px;margin:8px 0 16px">
+    <label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer">
+      <input type="checkbox" id="monitor-toggle" onchange="saveMonitorEnabled()" style="opacity:0;width:0;height:0">
+      <span style="position:absolute;inset:0;background:#ccc;border-radius:24px;transition:.3s"></span>
+      <span style="position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.2)" id="monitor-toggle-dot"></span>
+    </label>
+    <span id="monitor-toggle-label" style="font-size:14px;font-weight:500">已开启</span>
+  </div>
+  <p style="color:#6b6560;font-size:13px;margin:-8px 0 20px">关闭后停止 CloudWatch 数据采集和告警推送，节省 GetMetricData 费用</p>
+
   <h3>用量监控告警阈值</h3>
   <p style="color:#6b6560;font-size:13px;margin:4px 0 12px">当预估费用（$）超过阈值时触发告警推送（单位：美元 $）。监控每 5 分钟运行一次，分别检查近 5 分钟、近 15 分钟、当日累计三个窗口的预估费用；未配置阈值时会直接推送提醒。</p>
   <div style="display:flex;gap:16px;margin:12px 0">
@@ -223,15 +234,18 @@ tr:hover { background: #faf7f4; }
   <div id="wh-msg"></div>
 
   <h3 style="margin-top:24px">每日账单推送策略
-    <span style="color:#c4442a;font-size:12px;font-weight:500;margin-left:8px">⚠ 用量告警不受影响，始终实时推送</span>
+    <span style="color:#c4442a;font-size:12px;font-weight:500;margin-left:8px">⚠ 用量告警受上方监控开关控制</span>
   </h3>
   <div style="display:flex;gap:16px;align-items:center;margin:8px 0;flex-wrap:wrap">
     <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
       <input type="radio" name="notify-policy" value="always"> 每天推送
     </label>
-    <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="工作日判断基于中国法定节假日（含调休上班），数据来源：国务院公告">
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="工作日判断基于中国法定节假日（含调休上班）">
       <input type="radio" name="notify-policy" value="workday"> 仅工作日推送
-      <span style="color:#999;font-size:11px">（法定节假日含调休，据国务院公告）</span>
+      <span style="color:#999;font-size:11px">（法定节假日含调休）</span>
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+      <input type="radio" name="notify-policy" value="never"> 不推送
     </label>
     <button class="btn" onclick="saveNotifyPolicy()" style="margin-left:auto">保存</button>
   </div>
@@ -579,6 +593,53 @@ async function saveWebhook() {
     body: JSON.stringify(items)});
   document.getElementById('wh-msg').innerHTML = `<div class="msg">已保存 ${items.length} 个渠道</div>`;
   setTimeout(() => document.getElementById('wh-msg').innerHTML = '', 2000);
+}
+
+// ===== Monitor Enabled Toggle =====
+async function loadMonitorEnabled() {
+  try {
+    const data = await (await fetch(`${API}/api/config/monitor-enabled`)).json();
+    const enabled = data.enabled !== false;
+    const toggle = document.getElementById('monitor-toggle');
+    toggle.checked = enabled;
+    updateMonitorToggleUI(enabled);
+  } catch (e) {
+    console.error('loadMonitorEnabled failed:', e);
+  }
+}
+
+function updateMonitorToggleUI(enabled) {
+  const dot = document.getElementById('monitor-toggle-dot');
+  const label = document.getElementById('monitor-toggle-label');
+  const track = dot.previousElementSibling;
+  if (enabled) {
+    track.style.background = '#2d8659';
+    dot.style.left = '22px';
+    label.textContent = '已开启';
+    label.style.color = '#2d8659';
+  } else {
+    track.style.background = '#ccc';
+    dot.style.left = '2px';
+    label.textContent = '已关闭';
+    label.style.color = '#6b6560';
+  }
+}
+
+async function saveMonitorEnabled() {
+  const toggle = document.getElementById('monitor-toggle');
+  const enabled = toggle.checked;
+  updateMonitorToggleUI(enabled);
+  try {
+    await fetch(`${API}/api/config/monitor-enabled`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled})
+    });
+  } catch (e) {
+    console.error('saveMonitorEnabled failed:', e);
+    // 回滚 UI
+    toggle.checked = !enabled;
+    updateMonitorToggleUI(!enabled);
+  }
 }
 
 // ===== Notify Policy =====
@@ -992,6 +1053,7 @@ loadDates();
 loadThresholds();
 loadRegions();
 loadWebhook();
+loadMonitorEnabled();
 loadNotifyPolicy();
 loadIamScan();
 </script>

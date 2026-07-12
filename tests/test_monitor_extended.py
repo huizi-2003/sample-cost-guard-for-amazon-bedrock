@@ -193,7 +193,8 @@ class TestHandlerAlerts:
     @pytest.fixture
     def mock_env(self):
         """Set up common mocks for handler tests."""
-        with patch('monitor.handler.get_cost_thresholds', return_value={'5min': 1e12, '15min': 1e12, 'daily': 1e12}), \
+        with patch('monitor.handler.get_monitor_enabled', return_value=True), \
+             patch('monitor.handler.get_cost_thresholds', return_value={'5min': 1e12, '15min': 1e12, 'daily': 1e12}), \
              patch('monitor.handler.get_regions', return_value=['us-east-1', 'us-west-2']), \
              patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook.example.com', 'type': 'feishu'}]), \
              patch('monitor.handler.put_item') as mock_put, \
@@ -294,7 +295,8 @@ class TestHandlerAlerts:
 
     def test_threshold_read_failure_sends_alert(self):
         """When cost threshold read fails, an alert is sent and handler returns 500."""
-        with patch('monitor.handler.get_cost_thresholds', side_effect=Exception("DDB timeout")), \
+        with patch('monitor.handler.get_monitor_enabled', return_value=True), \
+             patch('monitor.handler.get_cost_thresholds', side_effect=Exception("DDB timeout")), \
              patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook', 'type': 'feishu'}]), \
              patch('monitor.handler.send_webhook_all') as mock_send:
             from monitor.handler import handler
@@ -304,7 +306,8 @@ class TestHandlerAlerts:
 
     def test_no_regions_configured_sends_alert(self):
         """When no regions configured, sends alert and returns 500."""
-        with patch('monitor.handler.get_cost_thresholds', return_value={'5min': 1e12, '15min': 1e12, 'daily': 1e12}), \
+        with patch('monitor.handler.get_monitor_enabled', return_value=True), \
+             patch('monitor.handler.get_cost_thresholds', return_value={'5min': 1e12, '15min': 1e12, 'daily': 1e12}), \
              patch('monitor.handler.get_regions', return_value=[]), \
              patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook', 'type': 'feishu'}]), \
              patch('monitor.handler.send_webhook_all') as mock_send:
