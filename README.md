@@ -48,7 +48,7 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 - 每 5 分钟跨所有 Region 聚合 Bedrock token 用量
 - 覆盖 AWS/Bedrock + AWS/BedrockMantle 双 namespace，所有模型、所有 token 类型（含 cache）
 - 监控 Region：首次运行自动写入一组默认区域（us-east-1/us-east-2/us-west-1/us-west-2/eu-central-1/eu-west-1/eu-west-3/ap-northeast-1/ap-southeast-1/ap-southeast-2），可通过 Web Console 修改
-- 三层阈值告警（5min / 15min / daily），超阈值推送告警
+- 三层阈值告警（5min / 15min / daily），超阈值推送告警（阈值单位为美元 $）
 - 告警附带 Top Region + Top Model 明细
 - 告警抑制（15min/daily 窗口避免重复轰炸）
 - **数据持久化**：每次运行结果写入 DynamoDB（PK=`MONITOR#{date}`, SK=`T#{HH:MM}`），含 5min 总量、daily 累计、各模型按 token 类型拆分明细（input/output/cache_read/cache_write），2 天 TTL 自动过期
@@ -383,7 +383,11 @@ bedrock-cost-guard/
 ├── common/
 │   ├── __init__.py
 │   ├── config.py          # DynamoDB 读写封装
-│   └── webhook.py         # 通知发送（飞书/钉钉/企微）
+│   ├── webhook.py         # 通知发送（飞书/钉钉/企微）
+│   ├── holiday.py         # 中国工作日判断（节假日/调休）
+│   ├── iam_scanner.py     # IAM Bedrock 权限扫描逻辑
+│   ├── pricing.py         # 模型价格匹配与费用估算
+│   └── labels.py          # CloudWatch 指标 label 解析（模型名/token类型提取）
 ├── monitor/
 │   ├── __init__.py
 │   └── handler.py         # 用量监控 Lambda
@@ -404,7 +408,11 @@ bedrock-cost-guard/
 │   ├── test_reconciler_extended.py
 │   ├── test_web_api.py
 │   ├── test_web_extended.py
-│   └── test_webhook.py
+│   ├── test_webhook.py
+│   ├── test_iam_scanner.py
+│   ├── test_pricing.py
+│   ├── test_notify_policy.py
+│   └── test_labels.py
 └── docs/                  # 设计文档
 ```
 
