@@ -62,10 +62,9 @@ tr:hover { background: #faf7f4; }
 </head>
 <body>
 <div class="header">
-  <h1><span>▲</span> Bedrock Cost Guard</h1>
+  <h1><span>▲</span> Bedrock Cost Guard</h1> <span style="font-size:12px;color:#6b6560;margin-left:12px">数据来源 Cost Explorer，通常延迟 1~2 天，最近 1-2 天的数据可能不完整</span>
 </div>
 <div class="container">
-<p style="margin:0 0 16px; font-size:13px; color:#545b64;">💡 数据来源 Cost Explorer，通常延迟 1~2 天。最近 1-2 天的数据可能不完整。</p>
 <div class="tabs">
   <div class="tab active" data-panel="overview">费用总览</div>
   <div class="tab" data-panel="reconcile">历史对账</div>
@@ -158,7 +157,7 @@ tr:hover { background: #faf7f4; }
 <!-- Tab 4: 配置管理 -->
 <div id="config" class="panel">
   <h3>用量监控告警阈值</h3>
-  <p style="color:#666;font-size:13px;margin:4px 0 12px">当 Token 用量超过阈值时触发告警推送（单位：Token 数）。监控每 5 分钟运行一次，分别检查近 5 分钟、近 15 分钟、当日累计三个窗口。</p>
+  <p style="color:#6b6560;font-size:13px;margin:4px 0 12px">当 Token 用量超过阈值时触发告警推送（单位：Token 数）。监控每 5 分钟运行一次，分别检查近 5 分钟、近 15 分钟、当日累计三个窗口。</p>
   <div style="display:flex;gap:16px;margin:12px 0">
     <div class="form-group"><label>5 分钟窗口</label><input id="th-5min" type="number"></div>
     <div class="form-group"><label>15 分钟窗口</label><input id="th-15min" type="number"></div>
@@ -167,19 +166,15 @@ tr:hover { background: #faf7f4; }
   <button class="btn" onclick="saveThresholds()">保存阈值</button>
   <div id="th-msg"></div>
 
-  <h3 style="margin-top:24px">监控 Region</h3>
-  <p style="color:#666;font-size:13px;margin:4px 0 8px">以下 Region 正在被监控（系统自动配置，无需修改）</p>
-  <div id="regions-display" style="padding:10px;background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;font-family:monospace;font-size:13px;color:#495057;line-height:1.8"></div>
-
-  <h3 style="margin-top:24px">Webhook 通知</h3>
-  <p style="color:#666;font-size:13px;margin:4px 0 12px">支持配置多个推送渠道，如同时推送飞书和钉钉</p>
+  <h3 style="margin-top:24px">通知渠道配置</h3>
+  <p style="color:#6b6560;font-size:13px;margin:4px 0 12px">支持配置多个推送渠道，如同时推送飞书和钉钉</p>
   <div id="webhook-list"></div>
   <button class="btn btn-secondary" onclick="addWebhookRow()" style="margin-top:8px">+ 添加渠道</button>
-  <button class="btn" onclick="saveWebhook()" style="margin-top:8px">保存 Webhook</button>
+  <button class="btn" onclick="saveWebhook()" style="margin-top:8px">保存</button>
   <div id="wh-msg"></div>
 
-  <h3 style="margin-top:24px">日报推送策略</h3>
-  <p style="color:#666;font-size:13px;margin:4px 0 8px">控制每日账单对账日报的推送时机</p>
+  <h3 style="margin-top:24px">每日账单推送策略</h3>
+  <p style="color:#6b6560;font-size:13px;margin:4px 0 8px">控制每日账单对账报告的推送时机</p>
   <p style="color:#c4442a;font-size:13px;margin:0 0 12px;font-weight:500">⚠ 用量告警提醒不受此配置影响，始终实时推送，不可关闭</p>
   <div style="display:flex;gap:16px;align-items:center;margin:12px 0">
     <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
@@ -190,8 +185,12 @@ tr:hover { background: #faf7f4; }
     </label>
   </div>
   <p style="color:#999;font-size:12px;margin:4px 0">工作日判断基于中国法定节假日（含调休上班），数据来源：国务院公告</p>
-  <button class="btn" onclick="saveNotifyPolicy()">保存策略</button>
+  <button class="btn" onclick="saveNotifyPolicy()">保存</button>
   <div id="np-msg"></div>
+
+  <h3 style="margin-top:24px;color:#6b6560">监控 Region</h3>
+  <p style="color:#999;font-size:13px;margin:4px 0 8px">以下 Region 正在被监控（系统自动配置，无需修改）</p>
+  <div id="regions-display" style="padding:10px;background:#faf7f4;border:1px solid #e8e0d8;border-radius:8px;font-family:monospace;font-size:12px;color:#6b6560;line-height:1.8"></div>
 </div>
 </div>
 
