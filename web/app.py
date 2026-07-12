@@ -589,8 +589,8 @@ async def backfill(request: Request):
     data = await request.json()
     days = data.get('days', 0)
 
-    if not isinstance(days, int) or days < 1 or days > 365:
-        return JSONResponse({'error': 'days must be between 1 and 365'}, status_code=400)
+    if not isinstance(days, int) or days < 1 or days > 30:
+        return JSONResponse({'error': 'days must be between 1 and 30'}, status_code=400)
 
     lambda_client = boto3.client('lambda')
     now = datetime.now(timezone.utc)

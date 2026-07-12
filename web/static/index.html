@@ -7,9 +7,9 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Söhne', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f9f5f1; color: #2d2d2a; }
-.header { background: #1a1915; padding: 14px 24px; }
-.header h1 { color: #f5f0eb; font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
-.header span { color: #d4a574; }
+.header { background: #fff; padding: 16px 24px; border-bottom: 1px solid #e8e0d8; }
+.header h1 { color: #2d2d2a; font-size: 18px; font-weight: 700; display: inline-block; }
+.header span { color: #b5651d; }
 .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
 .tabs { display: flex; gap: 0; margin-bottom: 20px; background: #fff; border-radius: 12px; padding: 4px; border: 1px solid #e8e0d8; }
 .tab { padding: 10px 20px; cursor: pointer; border-radius: 8px; color: #6b6560; font-size: 14px; font-weight: 500; transition: all 0.2s; border: none; }
@@ -117,12 +117,13 @@ tr:hover { background: #faf7f4; }
   </div>
 
   <!-- 回填区域 -->
-  <div style="margin-top: 20px; padding: 16px; border: 1px solid #e0e0e0; border-radius: 8px;">
+  <div style="margin-top: 20px; padding: 16px; border: 1px solid #e8e0d8; border-radius: 10px;">
     <h4>历史数据回填</h4>
     <div style="display: flex; align-items: center; gap: 12px;">
       <label>回填天数：</label>
-      <input type="number" id="backfill-days" min="1" max="365" value="30" style="width: 80px; padding: 4px 8px;">
+      <input type="number" id="backfill-days" min="1" max="30" value="7" style="width: 80px; padding: 4px 8px;">
       <button id="btn-backfill" class="btn" onclick="startBackfill()">回填</button>
+      <span style="font-size:12px;color:#6b6560">最多 30 天</span>
     </div>
     <div id="backfill-progress" style="margin-top: 12px; display: none;">
       <div id="backfill-status"></div>
@@ -550,7 +551,7 @@ async function saveNotifyPolicy() {
 // ===== Backfill =====
 async function startBackfill() {
   const days = parseInt(document.getElementById('backfill-days').value);
-  if (isNaN(days) || days < 1 || days > 365) { alert('天数必须在 1-365 之间'); return; }
+  if (isNaN(days) || days < 1 || days > 30) { alert('天数必须在 1-30 之间'); return; }
 
   const btn = document.getElementById('btn-backfill');
   const progress = document.getElementById('backfill-progress');
