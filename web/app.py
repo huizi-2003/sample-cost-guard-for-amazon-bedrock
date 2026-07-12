@@ -570,8 +570,29 @@ async def put_config_notify_policy(request: Request):
 
 # ===== IAM Bedrock 权限扫描 =====
 
+# 能产生调用/费用的 Bedrock Action 前缀（排除只读的 List/Get/Describe）
+_DANGEROUS_PREFIXES = (
+    'bedrock:invoke',
+    'bedrock:createmodelinvocation',
+    'bedrock:createmodelcustomization',
+    'bedrock:createprovisionedmodel',
+    'bedrock:applyguardrail',
+    'bedrock:retrieve',
+    'bedrock:conversestream',
+    'bedrock:converse',
+)
+
+
+def _is_dangerous_action(action):
+    """判断一个 action 是否能产生 Bedrock 调用/费用。"""
+    lower = action.lower()
+    if lower == '*' or lower == 'bedrock:*':
+        return True
+    return any(lower.startswith(p) for p in _DANGEROUS_PREFIXES)
+
+
 def _extract_bedrock_actions(policy_doc):
-    """从策略文档提取 Bedrock 相关 Action。返回 set of action strings。"""
+    """从策略文档提取能产生 Bedrock 调用的危险 Action。返回 set of action strings。"""
     actions = set()
     if not isinstance(policy_doc, dict):
         return actions
@@ -583,8 +604,11 @@ def _extract_bedrock_actions(policy_doc):
             stmt_actions = [stmt_actions]
         for action in stmt_actions:
             lower = action.lower()
-            # 匹配 bedrock:* 或 bedrock:InvokeModel 等，也匹配 *（全权限）
-            if lower.startswith('bedrock:') or lower == '*':
+            # 先匹配 bedrock 相关或全权限
+            if not (lower.startswith('bedrock:') or lower == '*'):
+                continue
+            # 只保留能产生调用/费用的
+            if _is_dangerous_action(action):
                 actions.add(action)
     return actions
 
