@@ -1,7 +1,7 @@
 """Extended unit tests for monitor/handler.py
 
 Covers:
-- clean_label: metric label normalization
+- extract_model_name: metric label normalization
 - should_suppress: alert suppression logic for 5min/15min/daily windows
 - mark_alerted: state writing
 - Alert triggering: threshold checks, multi-region failure alert
@@ -14,7 +14,7 @@ from unittest.mock import patch, MagicMock, call
 from monitor.handler import extract_model_name, extract_token_type, should_suppress, mark_alerted
 
 
-# === extract_model_name tests (formerly clean_label) ===
+# === extract_model_name tests ===
 
 
 class TestCleanLabel:

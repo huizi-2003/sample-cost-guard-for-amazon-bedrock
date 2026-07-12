@@ -21,6 +21,10 @@ from common.config import (
     get_notify_policy, save_notify_policy
 )
 from common.pricing import PRICING, match_pricing as _match_pricing
+from common.labels import (
+    extract_model_name as _extract_model_name,
+    extract_token_type as _extract_token_type,
+)
 
 CW_TIMEOUT = BotoConfig(connect_timeout=10, read_timeout=30, retries={'max_attempts': 1})
 
@@ -176,19 +180,6 @@ async def monitor_data(date: str):
 # ===== 按模型实时查 CloudWatch =====
 
 
-def _clean_label(label):
-    """与 monitor/handler.py 的 clean_label 一致"""
-    label = label.replace('AWS/Bedrock ', '').replace('AWS/BedrockMantle ', '')
-    label = label.replace('global.anthropic.', '').replace('anthropic.', '')
-    for suffix in (' CacheReadInputTokenCount', ' CacheWriteInputTokenCount',
-                   ' InputTokenCount', ' OutputTokenCount',
-                   ' TotalInputTokens', ' TotalOutputTokens', ' Tokens'):
-        if label.endswith(suffix):
-            label = label[:-len(suffix)]
-            break
-    return label.strip()
-
-
 def _fetch_region_models(region, start, end):
     """查单个 region 的模型明细时间序列，返回 {model: [(timestamp_str, value), ...]}"""
     session = boto3.session.Session()
@@ -200,7 +191,7 @@ def _fetch_region_models(region, start, end):
     resp = cw.get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end)
     models = {}
     for r in resp['MetricDataResults']:
-        label = _clean_label(r['Label'])
+        label = _extract_model_name(r['Label'])
         if not label:
             continue
         for ts, val in zip(r['Timestamps'], r['Values']):
@@ -426,30 +417,6 @@ async def _calc_cost_from_cw():
                 pass
 
     return _build_cost_response(model_totals, timeline_points, unpriced)
-
-
-def _extract_model_name(label):
-    """与 monitor/handler.py 的 extract_model_name 一致。"""
-    label = label.replace('AWS/Bedrock ', '').replace('AWS/BedrockMantle ', '')
-    label = label.replace('global.anthropic.', '').replace('anthropic.', '')
-    for suffix in (' CacheReadInputTokenCount', ' CacheWriteInputTokenCount',
-                   ' InputTokenCount', ' OutputTokenCount',
-                   ' TotalInputTokens', ' TotalOutputTokens', ' Tokens'):
-        if label.endswith(suffix):
-            label = label[:-len(suffix)]
-            break
-    return label.strip()
-
-
-def _extract_token_type(label):
-    """与 monitor/handler.py 的 extract_token_type 一致。"""
-    if 'CacheRead' in label or 'cacheread' in label.lower():
-        return 'cache_read'
-    if 'CacheWrite' in label or 'cachewrite' in label.lower():
-        return 'cache_write'
-    if 'Output' in label:
-        return 'output'
-    return 'input'
 
 
 def _build_cost_response(model_totals, timeline_points, unpriced):

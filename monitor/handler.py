@@ -7,6 +7,7 @@ from botocore.config import Config
 from common.config import get_cost_thresholds, get_regions, get_alert_state, set_alert_state, get_webhook_config, put_item, get_account_id
 from common.pricing import estimate_cost
 from common.webhook import send_webhook_all
+from common.labels import extract_model_name, extract_token_type
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -82,31 +83,6 @@ def fetch_region(region, start_daily, start_15min, start_5min, end):
         '5min': total['5min'], '15min': total['15min'], 'daily': total['daily'],
         'models': models,
     }
-
-
-def extract_model_name(label):
-    """从 CW SEARCH label 中提取模型名（去掉 namespace 前缀和 token 类型后缀）。"""
-    label = label.replace('AWS/Bedrock ', '').replace('AWS/BedrockMantle ', '')
-    label = label.replace('global.anthropic.', '').replace('anthropic.', '')
-    for suffix in (' CacheReadInputTokenCount', ' CacheWriteInputTokenCount',
-                   ' InputTokenCount', ' OutputTokenCount',
-                   ' TotalInputTokens', ' TotalOutputTokens', ' Tokens'):
-        if label.endswith(suffix):
-            label = label[:-len(suffix)]
-            break
-    return label.strip()
-
-
-def extract_token_type(label):
-    """从 CW SEARCH label 中提取 token 类型：input/output/cache_read/cache_write。"""
-    if 'CacheRead' in label or 'cacheread' in label.lower():
-        return 'cache_read'
-    if 'CacheWrite' in label or 'cachewrite' in label.lower():
-        return 'cache_write'
-    if 'Output' in label:
-        return 'output'
-    # 默认归为 input（InputTokenCount, TotalInputTokens, 或无法识别的）
-    return 'input'
 
 
 def should_suppress(window, now, webhooks):
