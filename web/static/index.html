@@ -52,6 +52,7 @@ tr:hover { background: #faf7f4; }
 .summary-card .value { font-size: 24px; font-weight: 700; color: #b5651d; }
 .summary-card .label { font-size: 13px; color: #6b6560; margin-top: 4px; }
 .msg { padding: 8px 12px; margin: 8px 0; border-radius: 8px; background: #f0ebe4; color: #2d2d2a; border: 1px solid #d4cdc4; }
+.no-spin::-webkit-outer-spin-button, .no-spin::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
 /* Chart row - two columns */
 .chart-row { display: flex; gap: 24px; margin-top: 24px; }
@@ -219,9 +220,9 @@ tr:hover { background: #faf7f4; }
   <h3>用量监控告警阈值</h3>
   <p style="color:#6b6560;font-size:13px;margin:4px 0 12px">当预估费用（$）超过阈值时触发告警推送（单位：美元 $）。监控每 5 分钟运行一次，分别检查近 5 分钟、近 15 分钟、当日累计三个窗口的预估费用；未配置阈值时会直接推送提醒。</p>
   <div style="display:flex;gap:24px;margin:12px 0;flex-wrap:wrap;align-items:center">
-    <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap">5 分钟窗口 ($)</label><input id="th-5min" type="number" step="0.01" min="0" style="width:100px"></div>
-    <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap">15 分钟窗口 ($)</label><input id="th-15min" type="number" step="0.01" min="0" style="width:100px"></div>
-    <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap">当日累计 ($)</label><input id="th-daily" type="number" step="0.01" min="0" style="width:100px"></div>
+    <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">5 分钟窗口 ($)</label><input id="th-5min" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
+    <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">15 分钟窗口 ($)</label><input id="th-15min" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
+    <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">当日累计 ($)</label><input id="th-daily" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
   </div>
   <button class="btn" onclick="saveThresholds()">保存阈值</button>
   <div id="th-msg"></div>
