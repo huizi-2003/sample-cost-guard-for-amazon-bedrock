@@ -222,9 +222,9 @@ tr:hover { background: #faf7f4; }
     <h4 style="font-size:14px;font-weight:600;margin:0 0 8px;color:#2d2d2a">告警阈值</h4>
     <p style="color:#6b6560;font-size:13px;margin:0 0 12px">预估费用超过阈值时触发告警。每 5 分钟检查三个窗口；未配置阈值时直接推送提醒。</p>
     <div style="display:flex;gap:24px;margin:12px 0;flex-wrap:wrap;align-items:center">
-      <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">5 分钟窗口 ($)</label><input id="th-5min" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
-      <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">15 分钟窗口 ($)</label><input id="th-15min" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
-      <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">当日累计 ($)</label><input id="th-daily" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
+      <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">5 分钟窗口 ($)<span style="font-size:11px;color:#999;margin-left:4px">突发检测</span></label><input id="th-5min" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
+      <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">15 分钟窗口 ($)<span style="font-size:11px;color:#999;margin-left:4px">趋势检测</span></label><input id="th-15min" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
+      <div style="display:flex;align-items:center;gap:8px"><label style="font-size:14px;white-space:nowrap;color:#6b6560">当日累计 ($)<span style="font-size:11px;color:#999;margin-left:4px">预算兜底</span></label><input id="th-daily" type="number" step="0.01" min="0" style="width:140px;text-align:right;-moz-appearance:textfield" class="no-spin"></div>
     </div>
     <button class="btn" onclick="saveThresholds()">保存阈值</button>
     <div id="th-msg"></div>
