@@ -29,7 +29,8 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
-from common.config import save_reconcile_record, get_webhook_config
+from common.config import save_reconcile_record, get_webhook_config, get_notify_policy
+from common.holiday import is_workday
 from common.webhook import send_webhook_all
 
 logger = logging.getLogger()
@@ -452,6 +453,18 @@ def handler(event, context):
         else:
             combined += r['msg']
 
-    send_webhook_all(combined, webhooks)
+    # 推送策略判断：workday 模式下非工作日跳过推送（对账照常执行，数据不丢）
+    notify_policy = get_notify_policy()
+    beijing_now = now.astimezone(BEIJING_TZ)
+    should_notify = True
+
+    if notify_policy == 'workday':
+        should_notify = is_workday(beijing_now.date())
+        if not should_notify:
+            logger.info(f"Notify policy is 'workday' and today ({beijing_now.strftime('%Y-%m-%d')}) is not a workday, skipping notification")
+
+    if should_notify:
+        send_webhook_all(combined, webhooks)
+
     logger.info(combined)
     return {'statusCode': 200, 'dates': dates}

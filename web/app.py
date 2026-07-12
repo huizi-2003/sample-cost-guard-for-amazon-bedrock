@@ -17,7 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from common.config import (
     get_thresholds, get_regions, get_reconcile_by_date,
     get_reconcile_dates, put_item, get_item, query_by_pk,
-    get_webhook_config, save_webhook_config
+    get_webhook_config, save_webhook_config,
+    get_notify_policy, save_notify_policy
 )
 
 CW_TIMEOUT = BotoConfig(connect_timeout=10, read_timeout=30, retries={'max_attempts': 1})
@@ -562,6 +563,23 @@ async def put_config_webhook(request: Request):
         return JSONResponse({'error': '最多配置 3 个 Webhook 渠道'}, status_code=400)
     save_webhook_config(cleaned)
     return {'ok': True, 'count': len(cleaned)}
+
+
+@app.get('/api/config/notify-policy')
+async def get_config_notify_policy():
+    """获取日报推送策略"""
+    return {'policy': get_notify_policy()}
+
+
+@app.put('/api/config/notify-policy')
+async def put_config_notify_policy(request: Request):
+    """设置日报推送策略：always（每天）或 workday（仅工作日）"""
+    data = await request.json()
+    policy = data.get('policy', '').strip()
+    if policy not in ('always', 'workday'):
+        return JSONResponse({'error': "policy must be 'always' or 'workday'"}, status_code=400)
+    save_notify_policy(policy)
+    return {'ok': True, 'policy': policy}
 
 
 # ===== 回填 =====

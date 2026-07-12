@@ -118,6 +118,30 @@ def save_webhook_config(items):
     put_item('CONFIG', 'webhooks', items=items)
 
 
+def get_notify_policy():
+    """获取日报推送策略。
+
+    返回值:
+        'always'  — 每天推送
+        'workday' — 仅工作日推送（基于中国法定节假日）
+    """
+    item = get_item('CONFIG', 'notify_policy')
+    if item and item.get('value') in ('always', 'workday'):
+        return item['value']
+    return 'always'
+
+
+def save_notify_policy(policy):
+    """保存日报推送策略。
+
+    Args:
+        policy: 'always' 或 'workday'
+    """
+    if policy not in ('always', 'workday'):
+        raise ValueError(f"Invalid notify_policy: {policy}, must be 'always' or 'workday'")
+    put_item('CONFIG', 'notify_policy', value=policy)
+
+
 def get_reconcile_dates(limit=30):
     """获取最近有对账数据的日期列表（带分页）"""
     table = _get_table()

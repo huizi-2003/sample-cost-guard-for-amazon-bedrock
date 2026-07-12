@@ -153,21 +153,19 @@ tr:hover { background: #f0f4ff; }
 
 <!-- Tab 4: 配置管理 -->
 <div id="config" class="panel">
-  <h3>提醒阈值</h3>
+  <h3>用量监控告警阈值</h3>
+  <p style="color:#666;font-size:13px;margin:4px 0 12px">当 Token 用量超过阈值时触发告警推送（单位：Token 数）。监控每 5 分钟运行一次，分别检查近 5 分钟、近 15 分钟、当日累计三个窗口。</p>
   <div style="display:flex;gap:16px;margin:12px 0">
-    <div class="form-group"><label>5 分钟</label><input id="th-5min" type="number"></div>
-    <div class="form-group"><label>15 分钟</label><input id="th-15min" type="number"></div>
-    <div class="form-group"><label>每日</label><input id="th-daily" type="number"></div>
+    <div class="form-group"><label>5 分钟窗口</label><input id="th-5min" type="number"></div>
+    <div class="form-group"><label>15 分钟窗口</label><input id="th-15min" type="number"></div>
+    <div class="form-group"><label>当日累计</label><input id="th-daily" type="number"></div>
   </div>
   <button class="btn" onclick="saveThresholds()">保存阈值</button>
   <div id="th-msg"></div>
 
   <h3 style="margin-top:24px">监控 Region</h3>
-  <div class="form-group">
-    <textarea id="regions-input" rows="3" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px" placeholder="us-east-1, us-west-2, ..."></textarea>
-  </div>
-  <button class="btn" onclick="saveRegions()">保存 Region</button>
-  <div id="regions-msg"></div>
+  <p style="color:#666;font-size:13px;margin:4px 0 8px">以下 Region 正在被监控（系统自动配置，无需修改）</p>
+  <div id="regions-display" style="padding:10px;background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;font-family:monospace;font-size:13px;color:#495057;line-height:1.8"></div>
 
   <h3 style="margin-top:24px">Webhook 通知</h3>
   <p style="color:#666;font-size:13px;margin:4px 0 12px">支持配置多个推送渠道，如同时推送飞书和钉钉</p>
@@ -175,6 +173,21 @@ tr:hover { background: #f0f4ff; }
   <button class="btn" onclick="addWebhookRow()" style="background:#6c757d;margin-top:8px">+ 添加渠道</button>
   <button class="btn" onclick="saveWebhook()" style="margin-top:8px">保存 Webhook</button>
   <div id="wh-msg"></div>
+
+  <h3 style="margin-top:24px">日报推送策略</h3>
+  <p style="color:#666;font-size:13px;margin:4px 0 8px">控制每日账单对账日报的推送时机</p>
+  <p style="color:#e63946;font-size:13px;margin:0 0 12px;font-weight:500">⚠ 用量告警提醒不受此配置影响，始终实时推送，不可关闭</p>
+  <div style="display:flex;gap:16px;align-items:center;margin:12px 0">
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+      <input type="radio" name="notify-policy" value="always"> 每天推送
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+      <input type="radio" name="notify-policy" value="workday"> 仅工作日推送
+    </label>
+  </div>
+  <p style="color:#999;font-size:12px;margin:4px 0">工作日判断基于中国法定节假日（含调休上班），数据来源：国务院公告</p>
+  <button class="btn" onclick="saveNotifyPolicy()">保存策略</button>
+  <div id="np-msg"></div>
 </div>
 </div>
 
@@ -458,14 +471,8 @@ async function saveThresholds() {
 
 async function loadRegions() {
   const data = await (await fetch(`${API}/api/config/regions`)).json();
-  document.getElementById('regions-input').value = data.join(', ');
-}
-
-async function saveRegions() {
-  const regions = document.getElementById('regions-input').value.split(/[,\n]/).map(r => r.trim()).filter(Boolean);
-  await fetch(`${API}/api/config/regions`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({regions})});
-  document.getElementById('regions-msg').innerHTML = '<div class="msg">已保存</div>';
-  setTimeout(() => document.getElementById('regions-msg').innerHTML = '', 2000);
+  const el = document.getElementById('regions-display');
+  el.innerHTML = data.map(r => `<span style="display:inline-block;background:#e2e8f0;padding:2px 8px;border-radius:3px;margin:2px 4px">${r}</span>`).join('');
 }
 
 async function loadWebhook() {
@@ -529,6 +536,35 @@ async function saveWebhook() {
     body: JSON.stringify(items)});
   document.getElementById('wh-msg').innerHTML = `<div class="msg">已保存 ${items.length} 个渠道</div>`;
   setTimeout(() => document.getElementById('wh-msg').innerHTML = '', 2000);
+}
+
+// ===== Notify Policy =====
+async function loadNotifyPolicy() {
+  try {
+    const data = await (await fetch(`${API}/api/config/notify-policy`)).json();
+    const policy = data.policy || 'always';
+    const radios = document.querySelectorAll('input[name="notify-policy"]');
+    radios.forEach(r => { r.checked = (r.value === policy); });
+  } catch (e) {
+    console.error('loadNotifyPolicy failed:', e);
+  }
+}
+
+async function saveNotifyPolicy() {
+  const selected = document.querySelector('input[name="notify-policy"]:checked');
+  if (!selected) { alert('请选择推送策略'); return; }
+  const resp = await fetch(`${API}/api/config/notify-policy`, {
+    method: 'PUT', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({policy: selected.value})
+  });
+  const msgEl = document.getElementById('np-msg');
+  if (resp.ok) {
+    msgEl.innerHTML = '<div class="msg">已保存</div>';
+  } else {
+    const err = await resp.json();
+    msgEl.innerHTML = `<div class="msg" style="color:red">${err.error || '保存失败'}</div>`;
+  }
+  setTimeout(() => msgEl.innerHTML = '', 2000);
 }
 
 // ===== Backfill =====
@@ -790,6 +826,7 @@ loadDates();
 loadThresholds();
 loadRegions();
 loadWebhook();
+loadNotifyPolicy();
 </script>
 </body>
 </html>
