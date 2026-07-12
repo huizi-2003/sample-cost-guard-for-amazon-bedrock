@@ -14,7 +14,7 @@ from hypothesis import given, settings
 from hypothesis.strategies import (
     floats, sampled_from, lists, composite, booleans,
 )
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from reconciler.handler import (
     extract_model_identity, get_token_type, TOKEN_TYPE_FIELDS,
@@ -377,6 +377,8 @@ from datetime import datetime, timezone, timedelta
 from reconciler.handler import handler
 
 
+@patch('reconciler.handler._get_table', new=MagicMock())
+@patch('reconciler.handler.query_by_pk', new=MagicMock(return_value=[]))
 @patch('reconciler.handler.send_webhook_all')
 @patch('reconciler.handler.save_reconcile_record')
 @patch('reconciler.handler.get_cloudwatch_token_total', return_value=(0, [], {}))
@@ -394,6 +396,8 @@ def test_valid_historical_date_sets_correct_dates(
     assert result['date'] == '2024-06-15'
 
 
+@patch('reconciler.handler._get_table', new=MagicMock())
+@patch('reconciler.handler.query_by_pk', new=MagicMock(return_value=[]))
 @patch('reconciler.handler.get_account_id', return_value='123456789012')
 @patch('reconciler.handler.get_notify_policy', return_value='always')
 @patch('reconciler.handler.send_webhook_all')

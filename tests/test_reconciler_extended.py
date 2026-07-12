@@ -152,6 +152,8 @@ class TestGetRegionsFromCE:
 class TestReconcileOneIntegration:
     """Integration tests for reconcile_one with mocked AWS calls."""
 
+    @patch('reconciler.handler._get_table', new=MagicMock())
+    @patch('reconciler.handler.query_by_pk', new=MagicMock(return_value=[]))
     @patch('reconciler.handler.save_reconcile_record')
     @patch('reconciler.handler.get_cloudwatch_token_total')
     @patch('reconciler.handler.get_cost_explorer_data')
@@ -173,6 +175,8 @@ class TestReconcileOneIntegration:
         # Should save model record + _summary + _ce_detail + _cw_detail
         assert mock_save.call_count >= 4
 
+    @patch('reconciler.handler._get_table', new=MagicMock())
+    @patch('reconciler.handler.query_by_pk', new=MagicMock(return_value=[]))
     @patch('reconciler.handler.save_reconcile_record')
     @patch('reconciler.handler.get_cloudwatch_token_total')
     @patch('reconciler.handler.get_cost_explorer_data')
@@ -186,6 +190,8 @@ class TestReconcileOneIntegration:
         assert 'ce_error' in result
         mock_save.assert_not_called()
 
+    @patch('reconciler.handler._get_table', new=MagicMock())
+    @patch('reconciler.handler.query_by_pk', new=MagicMock(return_value=[]))
     @patch('reconciler.handler.save_reconcile_record')
     @patch('reconciler.handler.get_cloudwatch_token_total')
     @patch('reconciler.handler.get_cost_explorer_data')
@@ -201,6 +207,8 @@ class TestReconcileOneIntegration:
         assert result['total_actual'] == 0
         assert '未发现 Bedrock 用量' in result['msg']
 
+    @patch('reconciler.handler._get_table', new=MagicMock())
+    @patch('reconciler.handler.query_by_pk', new=MagicMock(return_value=[]))
     @patch('reconciler.handler.save_reconcile_record')
     @patch('reconciler.handler.get_cloudwatch_token_total')
     @patch('reconciler.handler.get_cost_explorer_data')
@@ -219,6 +227,8 @@ class TestReconcileOneIntegration:
         # diff = (1000000 - 1050000) / 1050000 * 100 ≈ -4.76%
         assert result['reconcile_diff_pct'] == pytest.approx(-4.76, rel=0.01)
 
+    @patch('reconciler.handler._get_table', new=MagicMock())
+    @patch('reconciler.handler.query_by_pk', new=MagicMock(return_value=[]))
     @patch('reconciler.handler.save_reconcile_record')
     @patch('reconciler.handler.get_cloudwatch_token_total')
     @patch('reconciler.handler.get_cost_explorer_data')
@@ -235,6 +245,8 @@ class TestReconcileOneIntegration:
 
         assert 'us-west-2' in result['msg']
 
+    @patch('reconciler.handler._get_table', new=MagicMock())
+    @patch('reconciler.handler.query_by_pk', new=MagicMock(return_value=[]))
     @patch('reconciler.handler.save_reconcile_record')
     @patch('reconciler.handler.get_cloudwatch_token_total')
     @patch('reconciler.handler.get_cost_explorer_data')
@@ -265,3 +277,77 @@ class TestReconcileOneIntegration:
         assert 'cost_cache_read' in record_data
         assert 'cost_cache_write' in record_data
         assert 'cost_cache_write_1h' in record_data
+
+    @patch('reconciler.handler._get_table')
+    @patch('reconciler.handler.query_by_pk')
+    @patch('reconciler.handler.save_reconcile_record')
+    @patch('reconciler.handler.get_cloudwatch_token_total')
+    @patch('reconciler.handler.get_cost_explorer_data')
+    def test_stale_per_model_records_deleted_before_rewrite(self, mock_ce, mock_cw, mock_save, mock_query, mock_table):
+        """#2 幂等：重新对账时先删旧的 per-model SK，保留 _ 开头的元记录。"""
+        mock_ce.return_value = [
+            {'usage_type': 'USE1-model-input-tokens', 'cost': 5.0, 'quantity': 1000.0, 'unit': '1K tokens'},
+        ]
+        mock_cw.return_value = (1000000, [], {'us-east-1': 1000000})
+        # 该日期已存在一条旧模型记录 + 元记录
+        mock_query.return_value = [
+            {'PK': 'RECONCILE#2024-07-01', 'SK': 'stale-model-cross-region-global'},
+            {'PK': 'RECONCILE#2024-07-01', 'SK': '_summary'},
+        ]
+        table = MagicMock()
+        mock_table.return_value = table
+        now = datetime(2024, 7, 3, 1, 0, 0, tzinfo=timezone.utc)
+
+        reconcile_one('2024-07-01', '2024-07-02', now)
+
+        # 只删 per-model 旧记录，_summary 不删
+        table.delete_item.assert_called_once_with(
+            Key={'PK': 'RECONCILE#2024-07-01', 'SK': 'stale-model-cross-region-global'})
+
+    @patch('reconciler.handler._get_table', new=MagicMock())
+    @patch('reconciler.handler.query_by_pk', new=MagicMock(return_value=[]))
+    @patch('reconciler.handler.save_reconcile_record')
+    @patch('reconciler.handler.get_cloudwatch_token_total')
+    @patch('reconciler.handler.get_cost_explorer_data')
+    def test_diff_not_computed_when_regions_failed(self, mock_ce, mock_cw, mock_save):
+        """#4：有 region 查询失败时不计算 diff%（cw_total 不完整会误导）。"""
+        mock_ce.return_value = [
+            {'usage_type': 'USE1-model-input-tokens', 'cost': 5.0, 'quantity': 1000.0, 'unit': '1K tokens'},
+        ]
+        mock_cw.return_value = (900000, ['us-west-2'], {'us-east-1': 900000})
+        now = datetime(2024, 7, 3, 1, 0, 0, tzinfo=timezone.utc)
+
+        result = reconcile_one('2024-07-01', '2024-07-02', now)
+
+        assert result['reconcile_diff_pct'] is None
+        assert '数据缺失' in result['msg']
+
+    @patch('reconciler.handler.boto3')
+    def test_ce_pagination_follows_next_token(self, mock_boto3):
+        """#1：CE 返回 NextPageToken 时循环取完所有页。"""
+        from reconciler.handler import get_cost_explorer_data
+        ce = MagicMock()
+        mock_boto3.client.return_value = ce
+        page1 = {
+            'ResultsByTime': [{'Groups': [
+                {'Keys': ['USE1-a-input-tokens'],
+                 'Metrics': {'UnblendedCost': {'Amount': '1.0'}, 'UsageQuantity': {'Amount': '100', 'Unit': '1K tokens'}}},
+            ]}],
+            'NextPageToken': 'PAGE2',
+        }
+        page2 = {
+            'ResultsByTime': [{'Groups': [
+                {'Keys': ['USE1-b-output-tokens'],
+                 'Metrics': {'UnblendedCost': {'Amount': '2.0'}, 'UsageQuantity': {'Amount': '200', 'Unit': '1K tokens'}}},
+            ]}],
+        }
+        ce.get_cost_and_usage.side_effect = [page1, page2]
+
+        results = get_cost_explorer_data('2024-07-01', '2024-07-02')
+
+        # 两页都被取到
+        assert len(results) == 2
+        assert ce.get_cost_and_usage.call_count == 2
+        # 第二次调用带上了 NextPageToken
+        second_call_kwargs = ce.get_cost_and_usage.call_args_list[1][1]
+        assert second_call_kwargs.get('NextPageToken') == 'PAGE2'

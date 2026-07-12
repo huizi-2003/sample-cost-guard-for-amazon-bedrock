@@ -29,7 +29,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
-from common.config import save_reconcile_record, get_webhook_config, get_notify_policy, get_account_id
+from common.config import save_reconcile_record, get_webhook_config, get_notify_policy, get_account_id, query_by_pk, _get_table
 from common.holiday import is_workday
 from common.webhook import send_webhook_all
 
@@ -47,27 +47,37 @@ def get_cost_explorer_data(start_date, end_date):
     不是 "Amazon Bedrock"（Nova 等模型），两者是不同的 CE Service。
     """
     ce = boto3.client('ce', region_name='us-east-1')
-    resp = ce.get_cost_and_usage(
-        TimePeriod={'Start': start_date, 'End': end_date},
-        Granularity='DAILY',
-        Filter={'Dimensions': {'Key': 'SERVICE', 'Values': ['Amazon Bedrock Service']}},
-        GroupBy=[{'Type': 'DIMENSION', 'Key': 'USAGE_TYPE'}],
-        Metrics=['UnblendedCost', 'UsageQuantity'],
-    )
     results = []
-    for result in resp.get('ResultsByTime', []):
-        for group in result.get('Groups', []):
-            usage_type = group['Keys'][0]
-            cost = float(group['Metrics']['UnblendedCost']['Amount'])
-            qty_amount = float(group['Metrics']['UsageQuantity']['Amount'])
-            qty_unit = group['Metrics']['UsageQuantity'].get('Unit', '')
-            if cost > 0 or qty_amount > 0:
-                results.append({
-                    'usage_type': usage_type,
-                    'cost': cost,
-                    'quantity': qty_amount,
-                    'unit': qty_unit,
-                })
+    next_token = None
+    # CE 在分组结果超过一页时返回 NextPageToken，必须循环取完，
+    # 否则大账号（模型×区域×token类型 组合数多）只会读到第一页，费用被低估。
+    while True:
+        kwargs = {
+            'TimePeriod': {'Start': start_date, 'End': end_date},
+            'Granularity': 'DAILY',
+            'Filter': {'Dimensions': {'Key': 'SERVICE', 'Values': ['Amazon Bedrock Service']}},
+            'GroupBy': [{'Type': 'DIMENSION', 'Key': 'USAGE_TYPE'}],
+            'Metrics': ['UnblendedCost', 'UsageQuantity'],
+        }
+        if next_token:
+            kwargs['NextPageToken'] = next_token
+        resp = ce.get_cost_and_usage(**kwargs)
+        for result in resp.get('ResultsByTime', []):
+            for group in result.get('Groups', []):
+                usage_type = group['Keys'][0]
+                cost = float(group['Metrics']['UnblendedCost']['Amount'])
+                qty_amount = float(group['Metrics']['UsageQuantity']['Amount'])
+                qty_unit = group['Metrics']['UsageQuantity'].get('Unit', '')
+                if cost > 0 or qty_amount > 0:
+                    results.append({
+                        'usage_type': usage_type,
+                        'cost': cost,
+                        'quantity': qty_amount,
+                        'unit': qty_unit,
+                    })
+        next_token = resp.get('NextPageToken')
+        if not next_token:
+            break
     return results
 
 
@@ -324,12 +334,25 @@ def reconcile_one(start_date, end_date, now):
     # 4. 对账：CE token 总量 vs CloudWatch token 总量
     # 公式: diff% = (CE - CW) / CW × 100
     # 预期 diff ≈ 0%，差异大说明某侧数据有缺失
+    # 有 region 查询失败时 cw_total 不完整，此时算出的 diff% 会假性偏正，
+    # 误导为"监控丢数据"，故不计算，交由下方报告标注缺失。
     reconcile_diff_pct = None
-    if ce_token_total > 0 and cw_total > 0:
+    if ce_token_total > 0 and cw_total > 0 and not cw_failed_regions:
         reconcile_diff_pct = (ce_token_total - cw_total) / cw_total * 100
 
     # 5. 存入 DDB
     total_actual = sum(d['actual_cost'] for d in model_details.values())
+
+    # 幂等：同一日期会被对账多次（T-1 临时 / T-2 最终 / backfill）。
+    # save_reconcile_record 是 upsert，若某模型在旧一轮写入、这一轮却因跌破 0.01
+    # 或身份串变化而不再写，旧的 per-model SK 会残留，被 web 月度累加重复计数。
+    # 故写新记录前先删掉该日期所有 per-model 记录（保留 _summary/_ce_detail/_cw_detail，
+    # 它们随后会被覆盖）。此处已在 CE 查询成功之后，不会误删好数据。
+    old_items = query_by_pk(f'RECONCILE#{start_date}')
+    table = _get_table()
+    for it in old_items:
+        if not it['SK'].startswith('_'):
+            table.delete_item(Key={'PK': it['PK'], 'SK': it['SK']})
 
     for model, detail in model_details.items():
         if detail['actual_cost'] < 0.01:
@@ -387,10 +410,15 @@ def reconcile_one(start_date, end_date, now):
         msg += f"  差异: {reconcile_diff_pct:+.2f}%\n"
     elif ce_token_total == 0 and cw_total == 0:
         msg += f"  无 token 用量\n"
+    elif cw_failed_regions:
+        msg += f"  差异: 无法计算（{len(cw_failed_regions)} 个 Region 数据缺失）\n"
     else:
         msg += f"  差异: 无法计算（一侧为 0）\n"
     if cw_failed_regions:
         msg += f"  ⚠ 监控查询失败的 Region: {', '.join(cw_failed_regions)}\n"
+    # 口径说明：CW 侧 SEARCH 覆盖全部 Bedrock 模型，CE 侧仅 "Amazon Bedrock Service"（Claude 等）。
+    # 账号若有 Nova/Titan 等非 Claude 用量，监控总量会高于账单总量，diff 偏负属正常。
+    msg += f"  注：监控含全部 Bedrock 模型，账单仅 Claude 系；有非 Claude 用量时差异偏负属正常\n"
 
     # 费用汇总
     msg += f"\n--- 费用汇总 ---\n"
