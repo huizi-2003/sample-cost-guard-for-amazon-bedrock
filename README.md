@@ -350,10 +350,9 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard --query 'Stac
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `AllowedCidrs` | 允许访问 Web Console 的 CIDR 列表（逗号分隔）<br/>**变更时自动重新部署 API，Resource Policy 即时生效** | `127.0.0.1/32`（全部关闭） |
-| `GitHubOwner` / `GitHubRepo` / `Branch` | 代码来源 | 本仓库 main 分支 |
-| `Version` | 代码版本标记，改动即触发重新拉代码 + 重新部署 API | 1 |
+| `Version` | 代码版本标记，改动即触发重新拉代码 + 重新部署 Lambda | `$(date +%s)`（时间戳） |
 
-> **⚠️ 关于 `Version`**：改了代码就改这个值（触发重新拉取 GitHub 代码），没改代码就保持不变。值本身不重要，只要和上次不同即可，推荐用日期如 `20260707`。
+> **⚠️ 关于 `Version`**：改了代码就改这个值（触发重新拉取 GitHub 代码），没改代码就保持不变。值本身不重要，只要和上次不同即可，用 `$(date +%s)` 自动生成时间戳最省事。
 
 ### 部署后
 
