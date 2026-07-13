@@ -457,6 +457,7 @@ def _build_cost_response(model_totals, timeline_points, unpriced):
 
     return {
         'total_cost': round(total_cost, 4),
+        'total_tokens': sum(m['tokens'] for m in model_costs.values()),
         'models': model_costs,
         'timeline': timeline,
         'unpriced_models': sorted(unpriced),

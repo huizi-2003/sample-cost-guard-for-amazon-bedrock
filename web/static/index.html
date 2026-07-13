@@ -162,7 +162,7 @@ tr:hover { background: #faf7f4; }
   <div id="cost-cards" class="summary" style="display:none;">
     <div class="summary-card"><div class="value" id="cost-total">-</div><div class="label">今日预估费用</div></div>
     <div class="summary-card"><div class="value" id="cost-top-model">-</div><div class="label">费用最高的模型<span class="sub" id="cost-top-model-name"></span></div></div>
-    <div class="summary-card"><div class="value" id="cost-unpriced">-</div><div class="label">未定价模型数</div></div>
+    <div class="summary-card"><div class="value" id="cost-tokens">-</div><div class="label">累计 Token</div></div>
   </div>
   <div id="cost-note" style="display:none; font-size:12px; color:#999; margin:-12px 0 12px;">* 估算值，cache write 按 5min 价格计算；in-region 调用实际费用约高 10%</div>
   <div id="monitor-empty" style="display:none; text-align:center; padding:60px; color:#888;">
@@ -759,8 +759,8 @@ async function loadTodayCost() {
       document.getElementById('cost-top-model-name').textContent = '';
     }
 
-    // 未定价模型数
-    document.getElementById('cost-unpriced').textContent = data.unpriced_models.length;
+    // 累计 Token（所有已定价模型）
+    document.getElementById('cost-tokens').textContent = (data.total_tokens || 0).toLocaleString();
 
     // 趋势线
     if (data.timeline.length > 1) {
