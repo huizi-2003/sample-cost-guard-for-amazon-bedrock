@@ -51,6 +51,7 @@ tr:hover { background: #faf7f4; }
 .summary-card { background: #faf7f4; padding: 16px 24px; border-radius: 10px; flex: 1; min-width: 160px; border: 1px solid #e8e0d8; }
 .summary-card .value { font-size: 24px; font-weight: 700; color: #b5651d; }
 .summary-card .label { font-size: 13px; color: #6b6560; margin-top: 4px; }
+.summary-card .label .sub { display: block; font-size: 12px; color: #b5651d; font-weight: 600; margin-top: 2px; }
 .msg { padding: 8px 12px; margin: 8px 0; border-radius: 8px; background: #f0ebe4; color: #2d2d2a; border: 1px solid #d4cdc4; }
 .no-spin::-webkit-outer-spin-button, .no-spin::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 #iam-scan-table td { overflow-wrap: break-word; word-break: break-word; vertical-align: top; }
@@ -160,7 +161,7 @@ tr:hover { background: #faf7f4; }
   <!-- 预估费用卡片 -->
   <div id="cost-cards" class="summary" style="display:none;">
     <div class="summary-card"><div class="value" id="cost-total">-</div><div class="label">今日预估费用</div></div>
-    <div class="summary-card"><div class="value" id="cost-top-model">-</div><div class="label" id="cost-top-model-label">Top 模型</div></div>
+    <div class="summary-card"><div class="value" id="cost-top-model">-</div><div class="label">费用最高的模型<span class="sub" id="cost-top-model-name"></span></div></div>
     <div class="summary-card"><div class="value" id="cost-unpriced">-</div><div class="label">未定价模型数</div></div>
   </div>
   <div id="cost-note" style="display:none; font-size:12px; color:#999; margin:-12px 0 12px;">* 估算值，cache write 按 5min 价格计算；in-region 调用实际费用约高 10%</div>
@@ -752,7 +753,10 @@ async function loadTodayCost() {
     if (modelEntries.length > 0) {
       const top = modelEntries.sort((a, b) => b[1].cost - a[1].cost)[0];
       document.getElementById('cost-top-model').textContent = '$' + top[1].cost.toFixed(2);
-      document.getElementById('cost-top-model-label').textContent = shortenModelName(top[0]);
+      document.getElementById('cost-top-model-name').textContent = shortenModelName(top[0]);
+    } else {
+      document.getElementById('cost-top-model').textContent = '-';
+      document.getElementById('cost-top-model-name').textContent = '';
     }
 
     // 未定价模型数

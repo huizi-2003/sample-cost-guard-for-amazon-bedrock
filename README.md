@@ -378,7 +378,6 @@ aws cloudformation delete-stack --stack-name bedrock-cost-guard
 bedrock-cost-guard/
 ├── README.md
 ├── template.yaml          # CloudFormation 模板（自包含：自动建桶 + 拉代码 + 部署）
-├── deploy.sh              # CLI 部署辅助脚本
 ├── common/
 │   ├── __init__.py
 │   ├── config.py          # DynamoDB 读写封装
