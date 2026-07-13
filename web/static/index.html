@@ -53,6 +53,8 @@ tr:hover { background: #faf7f4; }
 .summary-card .label { font-size: 13px; color: #6b6560; margin-top: 4px; }
 .msg { padding: 8px 12px; margin: 8px 0; border-radius: 8px; background: #f0ebe4; color: #2d2d2a; border: 1px solid #d4cdc4; }
 .no-spin::-webkit-outer-spin-button, .no-spin::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+#iam-scan-table td { overflow-wrap: break-word; word-break: break-word; vertical-align: top; }
+#iam-scan-table code { display: inline-block; margin: 2px 0; }
 
 /* Chart row - two columns */
 .chart-row { display: flex; gap: 24px; margin-top: 24px; }
@@ -198,7 +200,14 @@ tr:hover { background: #faf7f4; }
     尚未执行扫描，点击上方按钮开始
   </div>
 
-  <table id="iam-scan-table" style="display:none">
+  <table id="iam-scan-table" style="display:none;table-layout:fixed">
+    <colgroup>
+      <col style="width:70px">
+      <col style="width:160px">
+      <col style="width:220px">
+      <col style="width:220px">
+      <col>
+    </colgroup>
     <thead><tr><th>类型</th><th>名称</th><th>Bedrock Actions</th><th>策略来源</th><th>信任关系 / 组成员</th></tr></thead>
     <tbody id="iam-scan-body"></tbody>
   </table>
