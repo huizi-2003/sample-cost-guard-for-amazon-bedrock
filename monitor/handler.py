@@ -62,6 +62,10 @@ def fetch_region(region, start_daily, start_15min, start_5min, end):
         resp = cw.get_metric_data(**kwargs)
         for r in resp['MetricDataResults']:
             model_name = extract_model_name(r['Label'])
+            # 无 ModelId 的裸 metric 序列（CloudWatch 元数据延迟的瞬时产物）：整条跳过。
+            # 它是同批数据的无维度聚合视图，计入会重复总量并污染模型明细。
+            if not model_name:
+                continue
             token_type = extract_token_type(r['Label'])
             for ts, val in zip(r['Timestamps'], r['Values']):
                 if val <= 0:

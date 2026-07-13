@@ -399,6 +399,8 @@ async def _calc_cost_from_cw():
         for r in resp['MetricDataResults']:
             label = r['Label']
             model_name = _extract_model_name(label)
+            if not model_name:  # 裸 metric 序列（无 ModelId），跳过避免污染/重复
+                continue
             token_type = _extract_token_type(label)
             for ts, val in zip(r['Timestamps'], r['Values']):
                 if val > 0:

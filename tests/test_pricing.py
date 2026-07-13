@@ -9,8 +9,14 @@ class TestMatchPricing:
         assert match_pricing('us.anthropic.claude-haiku-4-5') == PRICING['haiku']
         assert match_pricing('claude-fable-5') == PRICING['fable']
 
+    def test_matches_openai_mantle_models(self):
+        # bedrock-mantle 端点的 OpenAI 模型（label 形如 'openai.gpt-5.5'）也须命中价目表
+        assert match_pricing('openai.gpt-5.5') == PRICING['gpt-5.5']
+        assert match_pricing('openai.gpt-5.4') == PRICING['gpt-5.4']
+
     def test_unknown_returns_none(self):
-        assert match_pricing('openai.gpt-5.5') is None
+        # 未收录的 mantle 模型仍返回 None（费用按 0，计入 unpriced 提示）
+        assert match_pricing('openai.gpt-6') is None
 
 
 class TestEstimateCost:

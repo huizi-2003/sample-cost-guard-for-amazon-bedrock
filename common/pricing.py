@@ -10,10 +10,16 @@ cache_write 统一用 5min 标准价格。
 TOKEN_TYPES = ('input', 'output', 'cache_read', 'cache_write')
 
 PRICING = {
-    'opus':   {'input': 5,   'output': 25,  'cache_read': 0.5,  'cache_write': 6.25},
-    'fable':  {'input': 10,  'output': 50,  'cache_read': 1.0,  'cache_write': 12.5},
-    'sonnet': {'input': 3,   'output': 15,  'cache_read': 0.3,  'cache_write': 3.75},
-    'haiku':  {'input': 1,   'output': 5,   'cache_read': 0.1,  'cache_write': 1.25},
+    'opus':    {'input': 5,   'output': 25,  'cache_read': 0.5,  'cache_write': 6.25},
+    'fable':   {'input': 10,  'output': 50,  'cache_read': 1.0,  'cache_write': 12.5},
+    'sonnet':  {'input': 3,   'output': 15,  'cache_read': 0.3,  'cache_write': 3.75},
+    'haiku':   {'input': 1,   'output': 5,   'cache_read': 0.1,  'cache_write': 1.25},
+    # OpenAI 模型走 bedrock-mantle 端点，CloudWatch 只发布 TotalInputTokens/
+    # TotalOutputTokens（无 cache 拆分），故 cache 命中的 token 会并入 input，
+    # 按满价 input 估算（有 cache 时略偏高）。cache_read 价保留仅备将来指标拆分；
+    # OpenAI 无独立 cache-write 计费，故 cache_write 取 input 价。
+    'gpt-5.5': {'input': 5.5,  'output': 33,   'cache_read': 0.55,  'cache_write': 5.5},
+    'gpt-5.4': {'input': 2.75, 'output': 16.5, 'cache_read': 0.275, 'cache_write': 2.75},
 }
 
 
