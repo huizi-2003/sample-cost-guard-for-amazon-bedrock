@@ -236,6 +236,7 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:Query
                   - dynamodb:Scan
+                  - dynamodb:DeleteItem   # reconciler 幂等清理旧 per-model 记录需要
                 Resource: !GetAtt ConfigTable.Arn
               - Effect: Allow
                 Action:
