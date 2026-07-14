@@ -88,7 +88,7 @@ tr:hover { background: #faf7f4; }
     <nav class="tabs">
       <div class="tab active" data-panel="overview">费用总览</div>
       <div class="tab" data-panel="reconcile">历史对账</div>
-      <div class="tab" data-panel="monitor">今日监控</div>
+      <div class="tab" data-panel="monitor">实时监控</div>
       <div class="tab" data-panel="config">配置管理</div>
       <div class="tab" data-panel="iam-scan">权限扫描</div>
     </nav>
@@ -157,16 +157,16 @@ tr:hover { background: #faf7f4; }
 
 <!-- Tab 3: 今日监控 -->
 <div id="monitor" class="panel">
-  <div style="font-size:12px; color:#999; margin-bottom:8px;">时间轴为 UTC，数据每 5 分钟更新</div>
+  <div style="font-size:12px; color:#999; margin-bottom:8px;">滚动 24 小时窗口 · 时间为 UTC · 每 5 分钟采集</div>
   <!-- 预估费用卡片 -->
   <div id="cost-cards" class="summary" style="display:none;">
-    <div class="summary-card"><div class="value" id="cost-total">-</div><div class="label">今日预估费用</div></div>
+    <div class="summary-card"><div class="value" id="cost-total">-</div><div class="label">24h 预估费用</div></div>
     <div class="summary-card"><div class="value" id="cost-top-model">-</div><div class="label">费用最高的模型<span class="sub" id="cost-top-model-name"></span></div></div>
     <div class="summary-card"><div class="value" id="cost-tokens">-</div><div class="label">累计 Token</div></div>
   </div>
   <div id="cost-note" style="display:none; font-size:12px; color:#999; margin:-12px 0 12px;">* 估算值，cache write 按 5min 价格计算；in-region 调用实际费用约高 10%</div>
   <div id="monitor-empty" style="display:none; text-align:center; padding:60px; color:#888;">
-    暂无数据，监控数据每 5 分钟更新
+    暂无数据，最近 24 小时无调用
   </div>
   <!-- 累计费用趋势线 -->
   <div id="cost-trend-container" style="display:none; position:relative; height:200px; margin-bottom:20px;">
@@ -799,7 +799,7 @@ function renderCostTrend(timeline) {
       maintainAspectRatio: false,
       plugins: {
         legend: { display: false },
-        title: { display: true, text: '今日累计预估费用', font: { size: 14 }, color: '#1a1a2e' },
+        title: { display: true, text: '最近 24h 累计预估费用', font: { size: 14 }, color: '#1a1a2e' },
         tooltip: { callbacks: { label: (item) => '$' + item.parsed.y.toFixed(4) } },
       },
       scales: {
@@ -818,7 +818,7 @@ async function loadMonitorChart() {
   const utcDate = today.toISOString().slice(0, 10);
 
   try {
-    const todayResp = await fetch(`${API}/api/monitor/${utcDate}/models`);
+    const todayResp = await fetch(`${API}/api/monitor/last24h/models`);
     const todayData = await todayResp.json();
 
     const modelNames = Object.keys(todayData);

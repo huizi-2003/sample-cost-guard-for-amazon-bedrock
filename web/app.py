@@ -209,7 +209,11 @@ def _fetch_region_models(region, start, end):
 
 @app.get('/api/monitor/{date}/models')
 async def monitor_models(date: str):
-    """返回当日各模型的时间序列。优先从 DDB 读取缓存，无模型数据时 fallback 到实时 CW 查询。"""
+    """返回各模型的时间序列。支持 last24h（滚动24小时）或指定日期。
+    优先从 DDB 读取缓存，无模型数据时 fallback 到实时 CW 查询。"""
+    if date == 'last24h':
+        return _monitor_models_last24h()
+
     if not re.match(r'^\d{4}-\d{2}-\d{2}$', date):
         return JSONResponse({'error': 'Invalid date format'}, status_code=400)
 
@@ -251,6 +255,118 @@ async def monitor_models(date: str):
 
     # Fallback: 无模型缓存，实时查 CW
     return _fetch_models_from_cw(date)
+
+
+def _monitor_models_last24h():
+    """滚动 24h 窗口的模型时间序列。从 DDB 查两天数据，按 timestamp 过滤。"""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=24)
+    cutoff_str = cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    today_str = now.strftime('%Y-%m-%d')
+    yesterday_str = cutoff.strftime('%Y-%m-%d')
+
+    items = query_by_pk(f'MONITOR#{today_str}')
+    if yesterday_str != today_str:
+        items += query_by_pk(f'MONITOR#{yesterday_str}')
+
+    # 按 timestamp 过滤 24h 内
+    items = [i for i in items if i.get('timestamp', '') >= cutoff_str]
+
+    has_models = any('models' in item and item['models'] for item in items)
+
+    if has_models:
+        all_models = {}
+        for item in items:
+            # 用 timestamp 生成带日期前缀的时间 key
+            ts_raw = item.get('timestamp', '')
+            if ts_raw:
+                time_str = ts_raw[5:7] + '/' + ts_raw[8:10] + ' ' + ts_raw[11:16]
+            else:
+                time_str = item['SK'].replace('T#', '')
+            models = item.get('models')
+            if not models:
+                continue
+            for model, tokens in models.items():
+                if model not in all_models:
+                    all_models[model] = {}
+                if isinstance(tokens, dict):
+                    total = sum(int(v) for v in tokens.values())
+                else:
+                    total = int(tokens)
+                all_models[model][time_str] = all_models[model].get(time_str, 0) + total
+
+        result = {}
+        for model, time_map in all_models.items():
+            points = sorted(time_map.items(), key=lambda x: x[0])
+            cumulative = 0
+            series = []
+            for t, v in points:
+                cumulative += v
+                series.append({'time': t, 'tokens': cumulative})
+            result[model] = series
+        return result
+
+    # Fallback: 实时查 CW（24h 窗口）
+    return _fetch_models_from_cw_last24h()
+
+
+def _fetch_models_from_cw_last24h():
+    """实时从 CloudWatch 拉取最近 24h 各模型时间序列。"""
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=24)
+    end = now
+
+    regions = get_regions()
+    if not regions:
+        return {}
+
+    all_models = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_fetch_region_models_24h, r, start, end): r for r in regions}
+        for future in as_completed(futures):
+            region = futures[future]
+            try:
+                region_models = future.result()
+                for model, points in region_models.items():
+                    if model not in all_models:
+                        all_models[model] = {}
+                    for ts_str, val in points:
+                        all_models[model][ts_str] = all_models[model].get(ts_str, 0) + val
+            except Exception as e:
+                logger.warning(f"Region {region} CW model fetch failed (last24h): {e}")
+
+    result = {}
+    for model, time_map in all_models.items():
+        points = sorted(time_map.items(), key=lambda x: x[0])
+        cumulative = 0
+        series = []
+        for t, v in points:
+            cumulative += v
+            series.append({'time': t, 'tokens': int(cumulative)})
+        result[model] = series
+    return result
+
+
+def _fetch_region_models_24h(region, start, end):
+    """查单个 region 的模型明细时间序列（24h 窗口），时间 key 带日期前缀。"""
+    session = boto3.session.Session()
+    cw = session.client('cloudwatch', region_name=region, config=CW_TIMEOUT)
+    queries = [
+        {'Id': 'detail_bedrock', 'Expression': "SEARCH('{AWS/Bedrock,ModelId} TokenCount', 'Sum', 3600)", 'ReturnData': True},
+        {'Id': 'detail_mantle', 'Expression': "SEARCH('{AWS/BedrockMantle,Model} Tokens', 'Sum', 3600)", 'ReturnData': True},
+    ]
+    resp = cw.get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end)
+    models = {}
+    for r in resp['MetricDataResults']:
+        label = _extract_model_name(r['Label'])
+        if not label:
+            continue
+        for ts, val in zip(r['Timestamps'], r['Values']):
+            if val > 0:
+                ts_str = ts.astimezone(timezone.utc).strftime('%m/%d %H:%M')
+                models.setdefault(label, []).append((ts_str, val))
+    return models
 
 
 def _fetch_models_from_cw(date):
@@ -303,18 +419,31 @@ def _fetch_models_from_cw(date):
 
 @app.get('/api/today-cost')
 async def today_cost():
-    """从 DDB 读取今日监控数据，按价格常量计算估算费用。
+    """滚动 24h 窗口的预估费用。
 
+    从 DDB 读取最近 24 小时的监控数据，按价格常量计算估算费用。
     若 DDB 中无新格式（按类型拆分）数据，fallback 到实时查 CW。
 
     返回:
-      - total_cost: 今日预估总费用 ($)
+      - total_cost: 最近 24h 预估总费用 ($)
       - models: {model: {cost, input, output, cache_read, cache_write, tokens}}
       - timeline: [{time, cost}] 累计费用趋势
       - unpriced_models: 无法匹配价格的模型列表
     """
-    utc_today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    items = query_by_pk(f'MONITOR#{utc_today}')
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=24)
+    cutoff_str = cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # 滚动 24h 可能跨两个 UTC 日，查两个 PK
+    today_str = now.strftime('%Y-%m-%d')
+    yesterday_str = cutoff.strftime('%Y-%m-%d')
+
+    items = query_by_pk(f'MONITOR#{today_str}')
+    if yesterday_str != today_str:
+        items += query_by_pk(f'MONITOR#{yesterday_str}')
+
+    # 按 timestamp 过滤只保留 24h 内的记录
+    items = [i for i in items if i.get('timestamp', '') >= cutoff_str]
 
     # 检查是否有新格式数据（models 值为 dict）
     has_new_format = False
@@ -336,13 +465,18 @@ async def today_cost():
 
 
 def _calc_cost_from_ddb(items):
-    """从 DDB 新格式 models 数据计算费用。"""
+    """从 DDB 新格式 models 数据计算费用（支持跨天 24h 窗口）。"""
     model_totals = {}
     timeline_points = {}
     unpriced = set()
 
     for item in items:
-        time_str = item['SK'].replace('T#', '')
+        # 用 timestamp 字段生成带日期的时间 key（如 "07/13 22:57"）
+        ts_raw = item.get('timestamp', '')
+        if ts_raw:
+            time_str = ts_raw[5:7] + '/' + ts_raw[8:10] + ' ' + ts_raw[11:16]
+        else:
+            time_str = item['SK'].replace('T#', '')
         models = item.get('models')
         if not models:
             continue
@@ -373,10 +507,10 @@ def _calc_cost_from_ddb(items):
 
 
 async def _calc_cost_from_cw():
-    """Fallback: 实时从 CW 查按类型拆分的 token 数据，计算估算费用。"""
-    utc_today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    day_start = datetime.strptime(utc_today, '%Y-%m-%d').replace(tzinfo=timezone.utc)
-    end = datetime.now(timezone.utc)
+    """Fallback: 实时从 CW 查按类型拆分的 token 数据（滚动 24h 窗口），计算估算费用。"""
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=24)
+    end = now
 
     regions = get_regions()
     if not regions:
@@ -394,7 +528,7 @@ async def _calc_cost_from_cw():
             {'Id': 'detail_bedrock', 'Expression': "SEARCH('{AWS/Bedrock,ModelId} TokenCount', 'Sum', 3600)", 'ReturnData': True},
             {'Id': 'detail_mantle', 'Expression': "SEARCH('{AWS/BedrockMantle,Model} Tokens', 'Sum', 3600)", 'ReturnData': True},
         ]
-        resp = cw.get_metric_data(MetricDataQueries=queries, StartTime=day_start, EndTime=end)
+        resp = cw.get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end)
         results = []
         for r in resp['MetricDataResults']:
             label = r['Label']
@@ -404,7 +538,7 @@ async def _calc_cost_from_cw():
             token_type = _extract_token_type(label)
             for ts, val in zip(r['Timestamps'], r['Values']):
                 if val > 0:
-                    ts_str = ts.astimezone(timezone.utc).strftime('%H:%M')
+                    ts_str = ts.astimezone(timezone.utc).strftime('%m/%d %H:%M')
                     results.append((model_name, token_type, ts_str, val))
         return results
 
