@@ -204,7 +204,7 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 
 ### 4. 通知推送
 
-支持三种 Webhook 渠道（DDB `CONFIG#webhook` 配置 type 字段）：
+支持多渠道 Webhook（DDB `CONFIG#webhooks` 存 `items` 列表，每项含 name/url/type，最多 3 个）。旧的单条 `CONFIG#webhook` 格式仍兼容，读取时会自动迁移到新格式。渠道类型由 type 字段决定：
 
 | 渠道 | type 值 | Payload 格式 |
 |------|---------|-------------|
@@ -220,9 +220,10 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 |------|------|
 | `always`（默认） | 每天推送日报 |
 | `workday` | 仅中国工作日推送日报（跳过法定假日和周末，调休上班日照常推送） |
+| `never` | 不推送日报（对账数据照常写入 DynamoDB） |
 
 - 工作日判断数据来源：[NateScarlet/holiday-cn](https://github.com/NateScarlet/holiday-cn)（自动跟踪国务院公告）
-- **用量告警不受此策略影响，始终实时推送，不可关闭**
+- **用量告警不受此策略影响，始终实时推送，不可关闭**（`never` 也只关日报，不关告警）
 - 策略仅控制 reconciler 日报推送；对账数据无论是否推送都会正常写入 DynamoDB
 
 ### 5. IAM 权限扫描 — Bedrock 调用权限审计

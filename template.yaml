@@ -155,8 +155,8 @@ Resources:
                           os.makedirs(os.path.dirname(dest), exist_ok=True)
                           with open(dest, 'wb') as f:
                               f.write(src.read(name))
-                  # Install web dependencies from requirements.txt (flask/mangum/boto3),
-                  # 回退到显式安装 flask+mangum，避免缺依赖导致 500。
+                  # Install web dependencies from requirements.txt (fastapi/mangum/boto3),
+                  # 回退到显式安装 fastapi+mangum，避免缺依赖导致 500。
                   req_file = os.path.join(tmpdir, 'web', 'requirements.txt')
                   if os.path.exists(req_file):
                       subprocess.check_call(['pip', 'install', '-r', req_file, '-t', tmpdir, '--quiet'])
