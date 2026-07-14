@@ -3,6 +3,7 @@ import re
 import sys
 import time
 import json
+import math
 import logging
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -600,6 +601,10 @@ def _build_cost_response(model_totals, timeline_points, unpriced):
 
 # ===== 配置管理 =====
 
+# AWS region 格式校验：兼容标准区（us-east-1）和 gov/iso 区（us-gov-east-1）。
+# 白名单式格式校验，杜绝 XSS 载荷和乱码值污染监控配置。
+REGION_RE = re.compile(r'^[a-z]{2}(-[a-z]+){1,2}-\d+$')
+
 @app.get('/api/config/regions')
 async def get_config_regions():
     return get_regions()
@@ -609,7 +614,22 @@ async def get_config_regions():
 async def put_config_regions(request: Request):
     body = await request.json()
     regions = body.get('regions', [])
-    put_item('CONFIG', 'regions', value=','.join(regions))
+    if not isinstance(regions, list):
+        return JSONResponse({'error': 'regions must be a list'}, status_code=400)
+    if len(regions) > 50:
+        return JSONResponse({'error': 'too many regions (max 50)'}, status_code=400)
+    cleaned = []
+    seen = set()
+    for r in regions:
+        if not isinstance(r, str):
+            return JSONResponse({'error': 'each region must be a string'}, status_code=400)
+        r = r.strip().lower()
+        if not REGION_RE.match(r):
+            return JSONResponse({'error': f'invalid region format: {r!r}'}, status_code=400)
+        if r not in seen:
+            seen.add(r)
+            cleaned.append(r)
+    put_item('CONFIG', 'regions', value=','.join(cleaned))
     return {'ok': True}
 
 
@@ -630,6 +650,9 @@ async def put_config_cost_thresholds(request: Request):
             f_val = float(val)
         except (ValueError, TypeError):
             return JSONResponse({'error': f'Invalid value for {key}: must be a number'}, status_code=400)
+        if not math.isfinite(f_val):
+            # nan/inf 能通过 float() 但会让 "cost > threshold" 恒为 False，静默关闭告警
+            return JSONResponse({'error': f'Invalid value for {key}: must be a finite number'}, status_code=400)
         if f_val < 0:
             return JSONResponse({'error': f'Invalid value for {key}: must be non-negative'}, status_code=400)
     for key, val in data.items():

@@ -551,7 +551,8 @@ async function saveThresholds() {
 async function loadRegions() {
   const data = await (await fetch(`${API}/api/config/regions`)).json();
   const el = document.getElementById('regions-display');
-  el.innerHTML = data.map(r => `<span style="display:inline-block;background:#e2e8f0;padding:2px 8px;border-radius:3px;margin:2px 4px">${r}</span>`).join('');
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  el.innerHTML = (Array.isArray(data) ? data : []).map(r => `<span style="display:inline-block;background:#e2e8f0;padding:2px 8px;border-radius:3px;margin:2px 4px">${esc(r)}</span>`).join('');
 }
 
 async function loadWebhook() {

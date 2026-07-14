@@ -219,6 +219,38 @@ class TestConfigRegions:
         assert resp.status_code == 200
         mock_put.assert_called_once_with('CONFIG', 'regions', value='us-east-1,eu-west-1')
 
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    async def test_put_regions_accepts_gov_and_dedupes(self, mock_put, client):
+        resp = await client.put('/api/config/regions',
+                               json={'regions': ['US-EAST-1', 'us-east-1', 'us-gov-west-1']})
+        assert resp.status_code == 200
+        # 大小写归一 + 去重，保序
+        mock_put.assert_called_once_with('CONFIG', 'regions', value='us-east-1,us-gov-west-1')
+
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    async def test_put_regions_rejects_xss_payload(self, mock_put, client):
+        resp = await client.put('/api/config/regions',
+                               json={'regions': ['<script>alert(1)</script>']})
+        assert resp.status_code == 400
+        mock_put.assert_not_called()
+
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    async def test_put_regions_rejects_bad_format(self, mock_put, client):
+        for bad in [['foobar'], ['us_east_1'], [''], ['us-east']]:
+            resp = await client.put('/api/config/regions', json={'regions': bad})
+            assert resp.status_code == 400, bad
+        mock_put.assert_not_called()
+
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    async def test_put_regions_rejects_non_string(self, mock_put, client):
+        resp = await client.put('/api/config/regions', json={'regions': [123]})
+        assert resp.status_code == 400
+        mock_put.assert_not_called()
+
 
 # === GET/PUT /api/config/cost-thresholds ===
 
@@ -255,6 +287,15 @@ class TestConfigCostThresholds:
     async def test_put_cost_thresholds_rejects_negative(self, client):
         resp = await client.put('/api/config/cost-thresholds', json={'5min': -1})
         assert resp.status_code == 400
+
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    async def test_put_cost_thresholds_rejects_nan_and_inf(self, mock_put, client):
+        # nan/inf 能通过 float() 但会让 "cost > threshold" 恒 False，静默关闭告警
+        for bad in ['nan', 'inf', '-inf', 'Infinity']:
+            resp = await client.put('/api/config/cost-thresholds', json={'5min': bad})
+            assert resp.status_code == 400, bad
+        mock_put.assert_not_called()
 
 
 # === GET/PUT /api/config/webhook ===
