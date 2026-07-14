@@ -155,7 +155,7 @@ tr:hover { background: #faf7f4; }
   </div>
 </div>
 
-<!-- Tab 3: 今日监控 -->
+<!-- Tab 3: 实时监控 -->
 <div id="monitor" class="panel">
   <div style="font-size:12px; color:#999; margin-bottom:8px;">滚动 24 小时窗口 · 时间为 UTC · 每 5 分钟采集</div>
   <!-- 预估费用卡片 -->
@@ -217,9 +217,9 @@ tr:hover { background: #faf7f4; }
 <!-- Tab 4: 配置管理 -->
 <div id="config" class="panel" style="background:transparent;border:none;padding:0;">
 
-  <!-- 卡片 1: 用量监控 -->
+  <!-- 卡片 1: 实时监控 -->
   <div style="background:#fff;border:1px solid #e8e0d8;border-radius:12px;padding:24px;margin-bottom:20px">
-    <h3 style="margin:0 0 12px">用量监控</h3>
+    <h3 style="margin:0 0 12px">实时监控</h3>
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer">
         <input type="checkbox" id="monitor-toggle" onchange="saveMonitorEnabled()" style="opacity:0;width:0;height:0">
@@ -227,7 +227,7 @@ tr:hover { background: #faf7f4; }
         <span style="position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.2)" id="monitor-toggle-dot"></span>
       </label>
       <span id="monitor-toggle-label" style="font-size:14px;font-weight:500">已开启</span>
-      <span style="color:#6b6560;font-size:13px">关闭后停止 CloudWatch 数据采集和告警推送</span>
+      <span style="color:#6b6560;font-size:13px">关闭后停止 CloudWatch 数据采集和告警推送（监控本身有成本，约 $8~10/月）</span>
     </div>
     <h4 style="font-size:14px;font-weight:600;margin:0 0 8px;color:#2d2d2a">告警阈值</h4>
     <p style="color:#6b6560;font-size:13px;margin:0 0 12px">预估费用超过阈值时触发告警。每 5 分钟检查三个窗口；未配置阈值时直接推送提醒。</p>
@@ -726,7 +726,7 @@ async function startBackfill() {
   }
 }
 
-// ===== Tab 3: 今日监控 =====
+// ===== Tab 3: 实时监控 =====
 async function loadTodayCost() {
   try {
     const resp = await fetch(`${API}/api/today-cost`);
