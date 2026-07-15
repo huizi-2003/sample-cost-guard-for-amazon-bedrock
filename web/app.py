@@ -672,12 +672,22 @@ async def put_config_webhook(request: Request):
     """保存全部 webhook 配置（接收列表，最多 3 个）"""
     data = await request.json()
     items = data if isinstance(data, list) else data.get('items', [])
-    # 校验每项必须有 url 和 type
+    if not isinstance(items, list):
+        return JSONResponse({'error': 'items must be a list'}, status_code=400)
+    ALLOWED_TYPES = ('feishu', 'dingtalk', 'wecom')
     cleaned = []
     for item in items:
-        url = item.get('url', '').strip()
+        if not isinstance(item, dict):
+            return JSONResponse({'error': 'each item must be an object with url and type'}, status_code=400)
+        url = item.get('url', '').strip() if isinstance(item.get('url'), str) else ''
         wh_type = item.get('type', 'feishu')
-        name = item.get('name', wh_type).strip() or wh_type
+        if wh_type not in ALLOWED_TYPES:
+            return JSONResponse({'error': f"type must be one of: {', '.join(ALLOWED_TYPES)}"}, status_code=400)
+        if url and not url.startswith(('https://', 'http://')):
+            return JSONResponse({'error': f"url must start with https:// or http://"}, status_code=400)
+        name = item.get('name', wh_type)
+        name = name.strip() if isinstance(name, str) else wh_type
+        name = name or wh_type
         if url:  # 忽略空 URL 的条目
             cleaned.append({'name': name, 'url': url, 'type': wh_type})
     if len(cleaned) > 3:
