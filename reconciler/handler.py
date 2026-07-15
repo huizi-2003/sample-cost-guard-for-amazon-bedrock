@@ -219,21 +219,35 @@ TOKEN_TYPE_FIELDS = {
 
 
 # CE USAGE_TYPE 区域前缀 → AWS region 映射
-# CE 用 4 字母缩写代码作为 usage_type 前缀（如 USE1-xxx）
+# 参考: https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-region-billing-codes.html
 USAGE_PREFIX_TO_REGION = {
+    # North America
     'USE1': 'us-east-1', 'USE2': 'us-east-2',
     'USW1': 'us-west-1', 'USW2': 'us-west-2',
     'UGW1': 'us-gov-west-1', 'UGE1': 'us-gov-east-1',
-    'CAN1': 'ca-central-1',
+    'CAN1': 'ca-central-1', 'CAN2': 'ca-west-1',
+    'MXC1': 'mx-central-1',
+    # Europe
     'EU': 'eu-west-1', 'EUW1': 'eu-west-1', 'EUW2': 'eu-west-2', 'EUW3': 'eu-west-3',
     'EUC1': 'eu-central-1', 'EUC2': 'eu-central-2',
     'EUN1': 'eu-north-1', 'EUS1': 'eu-south-1', 'EUS2': 'eu-south-2',
+    # Asia Pacific
     'APN1': 'ap-northeast-1', 'APN2': 'ap-northeast-2', 'APN3': 'ap-northeast-3',
-    'APS1': 'ap-southeast-1', 'APS2': 'ap-southeast-2', 'APS3': 'ap-southeast-3',
-    'APS4': 'ap-southeast-4', 'APS5': 'ap-southeast-5',
-    'APE1': 'ap-east-1', 'API1': 'ap-south-1', 'API2': 'ap-south-2',
+    'APS1': 'ap-southeast-1', 'APS2': 'ap-southeast-2',
+    'APS3': 'ap-south-1',       # Mumbai
+    'APS4': 'ap-southeast-3',   # Jakarta
+    'APS5': 'ap-south-2',       # Hyderabad
+    'APS6': 'ap-southeast-4',   # Melbourne
+    'APS7': 'ap-southeast-5',   # Malaysia
+    'APS8': 'ap-southeast-6',   # New Zealand
+    'APS9': 'ap-southeast-7',   # Thailand
+    'APE1': 'ap-east-1', 'APE2': 'ap-east-2',
+    # South America
     'SAE1': 'sa-east-1',
+    # Middle East
     'MES1': 'me-south-1', 'MEC1': 'me-central-1',
+    'ILC1': 'il-central-1',
+    # Africa
     'AFS1': 'af-south-1',
 }
 
