@@ -629,6 +629,8 @@ async def put_config_regions(request: Request):
         if r not in seen:
             seen.add(r)
             cleaned.append(r)
+    if not cleaned:
+        return JSONResponse({'error': 'regions must not be empty'}, status_code=400)
     put_item('CONFIG', 'regions', value=','.join(cleaned))
     return {'ok': True}
 
