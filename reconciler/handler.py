@@ -459,7 +459,8 @@ def handler(event, context):
 
     override_date = event.get('date')
     if override_date:
-        # 回填 / 重跑指定日期（单日，单独推送）
+        # 回填 / 重跑指定日期（单日）。silent=True 时不推送（backfill 批量补录用）
+        silent = bool(event.get('silent'))
         try:
             parsed = datetime.strptime(override_date, '%Y-%m-%d')
         except ValueError:
@@ -470,9 +471,11 @@ def handler(event, context):
         end_date = (parsed + timedelta(days=1)).strftime('%Y-%m-%d')
         r = reconcile_one(start_date, end_date, now)
         if r.get('ce_error'):
-            send_webhook_all(f"[Bedrock 对账] 账号 {get_account_id()} | Cost Explorer 查询失败: {r['ce_error']}", webhooks)
+            if not silent:
+                send_webhook_all(f"[Bedrock 对账] 账号 {get_account_id()} | Cost Explorer 查询失败: {r['ce_error']}", webhooks)
             return {'statusCode': 500, 'error': 'ce_failed'}
-        send_webhook_all(f"[Bedrock 日报] 账号 {get_account_id()} | {start_date}\n\n{r['msg']}", webhooks)
+        if not silent:
+            send_webhook_all(f"[Bedrock 日报] 账号 {get_account_id()} | {start_date}\n\n{r['msg']}", webhooks)
         logger.info(r['msg'])
         return {'statusCode': 200, 'date': start_date, 'total_actual': r['total_actual'], 'reconcile_diff_pct': r['reconcile_diff_pct']}
 

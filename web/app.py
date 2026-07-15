@@ -816,7 +816,7 @@ async def backfill(request: Request):
             lambda_client.invoke(
                 FunctionName=RECONCILER_FUNCTION_NAME,
                 InvocationType='Event',
-                Payload=json.dumps({'date': target_date}),
+                Payload=json.dumps({'date': target_date, 'silent': True}),
             )
             triggered.append(target_date)
         except Exception as e:
