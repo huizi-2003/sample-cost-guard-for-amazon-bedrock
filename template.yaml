@@ -485,6 +485,7 @@ Resources:
                 Action:
                   - apigateway:POST
                   - apigateway:GET
+                  - apigateway:DELETE
                 Resource: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${WebApi}/deployments*"
 
   ApiDeploymentTriggerFunction:
@@ -520,7 +521,15 @@ Resources:
                   description = props.get('Description', 'CloudFormation deployment')
 
                   if req_type == 'Delete':
-                      send_response(event, context, 'SUCCESS', {'id': event['PhysicalResourceId']})
+                      dep_id = event.get('PhysicalResourceId', '')
+                      try:
+                          apigw.delete_deployment(restApiId=api_id, deploymentId=dep_id)
+                          print(f"Deleted deployment {dep_id}")
+                      except Exception as e:
+                          # best-effort: API may already be gone, deployment still on stage,
+                          # or PhysicalResourceId is a log stream name from failed Create
+                          print(f"Skip deleting deployment {dep_id}: {e}")
+                      send_response(event, context, 'SUCCESS', {'id': dep_id})
                       return
 
                   # Create/Update 都创建新的 Deployment（不指定 stageName，由 CFn Stage 资源管理）
