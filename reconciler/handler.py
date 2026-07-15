@@ -335,7 +335,8 @@ def reconcile_one(start_date, end_date, now):
         # 每个 line item 恰好命中一个 token_type，cost/quantity 只落入对应桶
         cost_field, tokens_field = TOKEN_TYPE_FIELDS[token_type]
         model_details[model][cost_field] += cost
-        model_details[model][tokens_field] += quantity
+        if is_token_usage(usage_type):
+            model_details[model][tokens_field] += quantity
 
     # actual_cost = 该模型 5 个 token 类型 cost 之和
     for detail in model_details.values():
