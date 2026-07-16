@@ -47,6 +47,8 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 
 - 每 5 分钟跨所有 Region 聚合 Bedrock token 用量
 - 覆盖 AWS/Bedrock + AWS/BedrockMantle 双 namespace，所有模型、所有 token 类型（含 cache）
+- **CW 查询方式**（与 reconciler 不同）：直接 SEARCH per-model 指标并返回原始数据点（`ReturnData=True`, Period=300），代码侧按时间戳切分 5min/15min/daily 窗口，同时获得每模型每类型明细；BedrockMantle 使用 `SEARCH('{AWS/BedrockMantle,Model} Tokens', 'Sum', 300)` 聚合 metric
+- **总开关**：DDB `CONFIG#monitor_enabled`，设为 `false` 时跳过全部监控逻辑（省 CloudWatch 费用），默认开启。通过 Web Console 配置管理页面切换
 - 监控 Region：首次运行自动写入一组默认区域（us-east-1/us-east-2/us-west-1/us-west-2/eu-central-1/eu-west-1/eu-west-3/ap-northeast-1/ap-southeast-1/ap-southeast-2），可通过 Web Console 修改
 - 三层阈值告警（5min / 15min / daily），超阈值推送告警（阈值单位为美元 $）
 - 告警附带 Top Region + Top Model 明细
@@ -60,11 +62,11 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 - **双日期对账**：每次 cron 同时对账 T-2（已结算，最终数据）和 T-1（临时，账单可能不完整），提供次日可见性 + 前日修正
 - **Token 对账**：对比 CE（计费系统）与 CloudWatch（监控系统）的 token 总量，验证两个系统数据一致性
 - 对账口径为 UTC 日（CE DAILY 粒度按 UTC 解释）
-- CloudWatch 查询的 Region 从 CE 账单的 USAGE_TYPE 前缀自动推导（账单里有哪些区域就查哪些，30+ 个前缀映射），无需手动配置
+- CloudWatch 查询的 Region 从 CE 账单的 USAGE_TYPE 前缀自动推导（账单里有哪些区域就查哪些，37 个前缀映射），无需手动配置
 - 按模型拆分费用明细，每模型展示 5 种 token 类型：input / output / cache_read / cache_write / cache_write_1h
 - 对账结果 + CE 原始明细 + CW 各 region 明细 全部存入 DynamoDB（90 天 TTL）
 - 每日推送合并报告（两个日期的 token 对账差异 + 费用明细），不管差异多少都推
-- **手动触发模式**：传入 `event.date` 可单独对账指定日期
+- **手动触发模式**：传入 `event.date` 可单独对账指定日期；`event.silent = true` 时不推送通知（Web Console 批量回填历史数据时使用，避免刷屏）
 
 #### 对账原理与计算规则
 
@@ -351,7 +353,10 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard --query 'Stac
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `AllowedCidrs` | 允许访问 Web Console 的 CIDR 列表（逗号分隔）<br/>**变更时自动重新部署 API，Resource Policy 即时生效** | `127.0.0.1/32`（全部关闭） |
-| `Version` | 代码版本标记，改动即触发重新拉代码 + 重新部署 Lambda | `$(date +%s)`（时间戳） |
+| `Version` | 代码版本标记，改动即触发重新拉代码 + 重新部署 Lambda | `1`（建议用 `$(date +%s)` 时间戳） |
+| `GitHubOwner` | GitHub 仓库所有者（fork 时改为你的用户名） | `huizi-2003` |
+| `GitHubRepo` | GitHub 仓库名 | `sample-cost-guard-for-amazon-bedrock` |
+| `Branch` | 拉取代码的 Git 分支 | `main` |
 
 > **⚠️ 关于 `Version`**：改了代码就改这个值（触发重新拉取 GitHub 代码），没改代码就保持不变。值本身不重要，只要和上次不同即可，用 `$(date +%s)` 自动生成时间戳最省事。
 
@@ -378,6 +383,7 @@ aws cloudformation delete-stack --stack-name bedrock-cost-guard
 ```
 bedrock-cost-guard/
 ├── README.md
+├── DEPLOY-GUIDE.md        # 部署指南（快速上手）
 ├── template.yaml          # CloudFormation 模板（自包含：自动建桶 + 拉代码 + 部署）
 ├── common/
 │   ├── __init__.py
