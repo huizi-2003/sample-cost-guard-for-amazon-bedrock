@@ -364,7 +364,7 @@ Resources:
         S3Key: web.zip
         S3ObjectVersion: !GetAtt CodeObject.WebVersionId
       Role: !GetAtt WebLambdaRole.Arn
-      Timeout: 60
+      Timeout: 300
       MemorySize: 512
       Environment:
         Variables:
