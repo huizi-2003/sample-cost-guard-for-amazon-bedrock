@@ -69,8 +69,6 @@ def send_webhook(message, webhook_url, webhook_type='feishu'):
             if _check_response(body, webhook_type):
                 return
             last_error = WebhookError(f"{webhook_type} API error: {body}")
-        except WebhookError:
-            raise
         except Exception as e:
             logger.error(f"Webhook attempt {attempt + 1} failed: {e}")
             last_error = e

@@ -22,6 +22,8 @@ logger.setLevel(logging.INFO)
 # 能产生 Bedrock 调用/费用的具体 Action（全小写）。
 # 维护具体清单而非前缀，才能正确处理 bedrock:In*、*:* 这类通配符写法。
 # 参考: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonbedrock.html
+# 注：StartAsyncInvoke（异步调用，视频类模型）复用 bedrock:InvokeModel 权限，
+# 无独立 action，已被 invokemodel 覆盖。
 DANGEROUS_ACTIONS = frozenset((
     'bedrock:invokemodel',
     'bedrock:invokemodelwithresponsestream',
@@ -32,6 +34,7 @@ DANGEROUS_ACTIONS = frozenset((
     'bedrock:invokeinlineagent',
     'bedrock:retrieve',
     'bedrock:retrieveandgenerate',
+    'bedrock:rerank',
     'bedrock:applyguardrail',
     'bedrock:createmodelinvocationjob',
     'bedrock:createmodelcustomizationjob',

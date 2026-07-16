@@ -85,6 +85,14 @@ class TestIsDangerousAction:
         """bedrock:Describe* should not match any dangerous action."""
         assert _is_dangerous_action('bedrock:Describe*') is False
 
+    def test_rerank_is_dangerous(self):
+        """bedrock:Rerank is a standalone billable action (per-call pricing)."""
+        assert _is_dangerous_action('bedrock:Rerank') is True
+
+    def test_bedrock_re_star_is_dangerous(self):
+        """bedrock:Re* matches rerank, retrieve, retrieveandgenerate."""
+        assert _is_dangerous_action('bedrock:Re*') is True
+
 
 class TestExtractBedrockActions:
     def test_extracts_only_billable_allow_actions(self):
@@ -243,6 +251,15 @@ class TestMatchDangerous:
         assert _match_dangerous('bedrock:Get*') == set()
         assert _match_dangerous('bedrock:List*') == set()
         assert _match_dangerous('s3:*') == set()
+
+    def test_re_star(self):
+        """bedrock:Re* matches rerank, retrieve, retrieveandgenerate."""
+        result = _match_dangerous('bedrock:Re*')
+        assert result == {'bedrock:rerank', 'bedrock:retrieve', 'bedrock:retrieveandgenerate'}
+
+    def test_rerank_exact(self):
+        result = _match_dangerous('bedrock:Rerank')
+        assert result == {'bedrock:rerank'}
 
 
 class TestCheckManagedPolicy:
