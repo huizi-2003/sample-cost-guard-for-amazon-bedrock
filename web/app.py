@@ -804,6 +804,7 @@ async def get_iam_scan():
         'user_count': int(meta.get('user_count', 0)) if meta else 0,
         'role_count': int(meta.get('role_count', 0)) if meta else 0,
         'group_count': int(meta.get('group_count', 0)) if meta else 0,
+        'unreadable_policies': meta.get('unreadable_policies', []) if meta else [],
         'results': results if status == 'done' else [],
     }
 

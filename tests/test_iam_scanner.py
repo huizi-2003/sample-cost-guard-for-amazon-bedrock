@@ -11,6 +11,7 @@ from common.iam_scanner import (
     _is_dangerous_action,
     _extract_bedrock_actions,
     _check_managed_policy,
+    _check_group_policies,
 )
 
 
@@ -83,12 +84,82 @@ class TestCheckManagedPolicy:
                 {'Effect': 'Allow', 'Action': 'bedrock:InvokeModel'},
             ]}}
         }
-        assert _check_managed_policy(iam, 'arn:aws:iam::aws:policy/Foo') == {'bedrock:InvokeModel'}
+        cache, unreadable = {}, set()
+        assert _check_managed_policy(iam, 'arn:aws:iam::aws:policy/Foo', cache, unreadable) == {'bedrock:InvokeModel'}
         iam.get_policy_version.assert_called_once_with(
             PolicyArn='arn:aws:iam::aws:policy/Foo', VersionId='v2')
+        # 成功结果进缓存，未记盲区
+        assert cache == {'arn:aws:iam::aws:policy/Foo': {'bedrock:InvokeModel'}}
+        assert unreadable == set()
 
-    def test_unreadable_policy_returns_empty_set(self):
+    def test_cache_hit_skips_api(self):
+        iam = MagicMock()
+        cache = {'arn:aws:iam::aws:policy/Cached': {'bedrock:Converse'}}
+        unreadable = set()
+        assert _check_managed_policy(iam, 'arn:aws:iam::aws:policy/Cached', cache, unreadable) == {'bedrock:Converse'}
+        # 命中缓存不再打 API
+        iam.get_policy.assert_not_called()
+        iam.get_policy_version.assert_not_called()
+
+    def test_unreadable_policy_returns_empty_and_records_blindspot(self):
         iam = MagicMock()
         iam.get_policy.side_effect = Exception('AccessDenied')
+        cache, unreadable = {}, set()
         # 读不到时应吞掉异常、当作无权限（现在会 logger.warning）
-        assert _check_managed_policy(iam, 'arn:aws:iam::aws:policy/Bar') == set()
+        assert _check_managed_policy(iam, 'arn:aws:iam::aws:policy/Bar', cache, unreadable) == set()
+        # 失败不缓存（后续遇到会重试），但记入盲区
+        assert cache == {}
+        assert unreadable == {'arn:aws:iam::aws:policy/Bar'}
+
+    def test_success_after_failure_clears_blindspot(self):
+        iam = MagicMock()
+        arn = 'arn:aws:iam::aws:policy/Flaky'
+        cache = {}
+        unreadable = {arn}   # 上一次失败留下的盲区
+        iam.get_policy.return_value = {'Policy': {'DefaultVersionId': 'v1'}}
+        iam.get_policy_version.return_value = {
+            'PolicyVersion': {'Document': {'Statement': [
+                {'Effect': 'Allow', 'Action': 'bedrock:InvokeModel'},
+            ]}}
+        }
+        assert _check_managed_policy(iam, arn, cache, unreadable) == {'bedrock:InvokeModel'}
+        assert unreadable == set()               # 成功后消账
+        assert cache == {arn: {'bedrock:InvokeModel'}}
+
+
+class TestCheckGroupPolicies:
+    @staticmethod
+    def _iam_with_bedrock_group():
+        iam = MagicMock()
+        iam.list_attached_group_policies.return_value = {
+            'AttachedPolicies': [{'PolicyName': 'BedrockFull', 'PolicyArn': 'arn:aws:iam::aws:policy/BedrockFull'}]
+        }
+        iam.get_policy.return_value = {'Policy': {'DefaultVersionId': 'v1'}}
+        iam.get_policy_version.return_value = {
+            'PolicyVersion': {'Document': {'Statement': [
+                {'Effect': 'Allow', 'Action': 'bedrock:InvokeModel'},
+            ]}}
+        }
+        iam.list_group_policies.return_value = {'PolicyNames': []}
+        return iam
+
+    def test_cache_populated_and_actions_correct(self):
+        iam = self._iam_with_bedrock_group()
+        policy_cache, group_cache, unreadable = {}, {}, set()
+        actions, sources = _check_group_policies(iam, 'Devs', policy_cache, group_cache, unreadable)
+        assert actions == {'bedrock:InvokeModel'}
+        assert 'Devs' in group_cache
+        assert sources[0]['name'] == 'BedrockFull'
+
+    def test_returns_fresh_copies_isolated_from_cache(self):
+        """缓存命中必须返回新副本：调用方就地写 via_group 不能污染缓存/串味其他身份。"""
+        iam = self._iam_with_bedrock_group()
+        policy_cache, group_cache, unreadable = {}, {}, set()
+        _, s1 = _check_group_policies(iam, 'Devs', policy_cache, group_cache, unreadable)
+        for gp in s1:              # 模拟 scan_iam_identities 里的就地写入
+            gp['via_group'] = 'Devs'
+        # 第二次命中缓存，应拿到不带上一轮 via_group 的干净副本
+        _, s2 = _check_group_policies(iam, 'Devs', policy_cache, group_cache, unreadable)
+        assert all('via_group' not in gp for gp in s2)
+        # 且底层托管策略只被读一次（第二次命中组缓存）
+        iam.list_attached_group_policies.assert_called_once()

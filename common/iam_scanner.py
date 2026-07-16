@@ -61,28 +61,52 @@ def _extract_bedrock_actions(policy_doc):
     return actions
 
 
-def _check_managed_policy(iam, policy_arn):
-    """检查托管策略是否包含 Bedrock 权限。返回 actions set。"""
+def _check_managed_policy(iam, policy_arn, policy_cache, unreadable):
+    """检查托管策略是否包含 Bedrock 权限。返回 actions set。
+
+    policy_cache: {arn: actions_set}，一次扫描内共享，只缓存成功读取的结果。
+      真实账号里几百个身份常挂同一批托管策略（AdministratorAccess 等），
+      缓存把 API 调用量从 O(身份数×策略数) 降到 O(唯一策略数)。
+    unreadable: set，收集本轮读不到的策略 ARN（无权限/已删除），供界面暴露审计盲区。
+      失败不写 cache → 后续遇到同一 ARN 会重试，避免单次限流把它永久误判为无权限。
+    返回的 set 仅被调用方 .update() 读取、不修改，可安全共享。
+    """
+    if policy_arn in policy_cache:
+        return policy_cache[policy_arn]
     try:
         policy = iam.get_policy(PolicyArn=policy_arn)['Policy']
         version_id = policy['DefaultVersionId']
         doc = iam.get_policy_version(PolicyArn=policy_arn, VersionId=version_id)['PolicyVersion']['Document']
-        return _extract_bedrock_actions(doc)
+        actions = _extract_bedrock_actions(doc)
+        policy_cache[policy_arn] = actions   # 仅成功才缓存
+        unreadable.discard(policy_arn)        # 之前若失败过，这次成功则消账
+        return actions
     except Exception as e:
         # 读不到策略（无权限/已删除）→ 当作无 Bedrock 权限，但记一笔避免静默漏报
         logger.warning(f"Cannot read managed policy {policy_arn}, treating as no bedrock access: {e}")
+        unreadable.add(policy_arn)             # 不缓存 → 后续遇到会重试
         return set()
 
 
-def _check_group_policies(iam, group_name):
-    """检查组的所有策略，返回 (actions_set, policy_sources_list)。"""
+def _check_group_policies(iam, group_name, policy_cache, group_cache, unreadable):
+    """检查组的所有策略，返回 (actions_set, policy_sources_list)。
+
+    group_cache: {group_name: (actions_set, sources_list)}。组的托管策略会被每个组成员
+      重复触发一次（Users 段）+ Groups 独立段再一次，缓存消除这些重复读取。
+    调用方会对返回的 sources 就地写入 via_group，故每次都返回**新副本**（新 list + 新 dict），
+      避免缓存对象被污染、跨身份串味。
+    """
+    if group_name in group_cache:
+        actions, sources = group_cache[group_name]
+        return set(actions), [dict(s) for s in sources]
+
     bedrock_actions = set()
     policy_sources = []
 
     # 组附加的托管策略
     attached = iam.list_attached_group_policies(GroupName=group_name)['AttachedPolicies']
     for p in attached:
-        actions = _check_managed_policy(iam, p['PolicyArn'])
+        actions = _check_managed_policy(iam, p['PolicyArn'], policy_cache, unreadable)
         if actions:
             bedrock_actions.update(actions)
             policy_sources.append({'name': p['PolicyName'], 'arn': p['PolicyArn'], 'type': 'managed'})
@@ -96,13 +120,23 @@ def _check_group_policies(iam, group_name):
             bedrock_actions.update(actions)
             policy_sources.append({'name': pname, 'type': 'inline'})
 
-    return bedrock_actions, policy_sources
+    group_cache[group_name] = (bedrock_actions, policy_sources)
+    return set(bedrock_actions), [dict(s) for s in policy_sources]
 
 
 def scan_iam_identities():
-    """扫描所有 IAM Users/Roles/Groups，找出有 Bedrock 权限的身份。"""
+    """扫描所有 IAM Users/Roles/Groups，找出有 Bedrock 权限的身份。
+
+    返回 (results, unreadable_policies)：
+      results — 有 Bedrock 权限的身份列表
+      unreadable_policies — 本轮无法读取的托管策略 ARN（sorted），审计盲区，供界面暴露
+    """
     iam = boto3.client('iam', config=_IAM_CONFIG)
     results = []
+    # 一次扫描内共享的缓存 + 读取失败收集器
+    policy_cache = {}   # {arn: actions_set}，只缓存成功
+    group_cache = {}    # {group_name: (actions_set, sources_list)}
+    unreadable = set()  # 读不到的托管策略 ARN
 
     # --- 扫描 Users ---
     paginator = iam.get_paginator('list_users')
@@ -115,7 +149,7 @@ def scan_iam_identities():
             # 用户附加的托管策略
             attached = iam.list_attached_user_policies(UserName=user_name)['AttachedPolicies']
             for p in attached:
-                actions = _check_managed_policy(iam, p['PolicyArn'])
+                actions = _check_managed_policy(iam, p['PolicyArn'], policy_cache, unreadable)
                 if actions:
                     bedrock_actions.update(actions)
                     policy_sources.append({'name': p['PolicyName'], 'arn': p['PolicyArn'], 'type': 'managed'})
@@ -132,7 +166,7 @@ def scan_iam_identities():
             # 用户所属 Group 的策略
             groups = iam.list_groups_for_user(UserName=user_name)['Groups']
             for g in groups:
-                g_actions, g_policies = _check_group_policies(iam, g['GroupName'])
+                g_actions, g_policies = _check_group_policies(iam, g['GroupName'], policy_cache, group_cache, unreadable)
                 if g_actions:
                     bedrock_actions.update(g_actions)
                     for gp in g_policies:
@@ -164,7 +198,7 @@ def scan_iam_identities():
             # 角色附加的托管策略
             attached = iam.list_attached_role_policies(RoleName=role_name)['AttachedPolicies']
             for p in attached:
-                actions = _check_managed_policy(iam, p['PolicyArn'])
+                actions = _check_managed_policy(iam, p['PolicyArn'], policy_cache, unreadable)
                 if actions:
                     bedrock_actions.update(actions)
                     policy_sources.append({'name': p['PolicyName'], 'arn': p['PolicyArn'], 'type': 'managed'})
@@ -209,7 +243,7 @@ def scan_iam_identities():
     for page in paginator.paginate():
         for group in page['Groups']:
             group_name = group['GroupName']
-            bedrock_actions, policy_sources = _check_group_policies(iam, group_name)
+            bedrock_actions, policy_sources = _check_group_policies(iam, group_name, policy_cache, group_cache, unreadable)
             if bedrock_actions:
                 # 获取组成员
                 members = [u['UserName'] for u in iam.get_group(GroupName=group_name)['Users']]
@@ -223,13 +257,13 @@ def scan_iam_identities():
                     'create_date': group['CreateDate'].isoformat(),
                 })
 
-    return results
+    return results, sorted(unreadable)
 
 
 def execute_iam_scan(scan_time):
     """实际执行 IAM 扫描（异步 invoke 时调用，无超时限制）。"""
     try:
-        results = scan_iam_identities()
+        results, unreadable_policies = scan_iam_identities()
 
         # 先删除旧的扫描结果
         old_items = query_by_pk('IAM_SCAN')
@@ -262,7 +296,8 @@ def execute_iam_scan(scan_time):
                  total_identities=str(len(results)),
                  user_count=str(user_count),
                  role_count=str(role_count),
-                 group_count=str(group_count))
+                 group_count=str(group_count),
+                 unreadable_policies=unreadable_policies)
 
         return {'statusCode': 200, 'total': len(results)}
     except Exception as e:

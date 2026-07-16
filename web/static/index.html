@@ -1005,6 +1005,15 @@ async function loadIamScan() {
     document.getElementById('iam-groups').textContent = data.group_count;
     document.getElementById('iam-scan-time').textContent = data.scan_time;
 
+    // 无法读取的策略 → 审计盲区，明确告知（这些策略授予的 Bedrock 权限可能被漏判）
+    const unreadable = data.unreadable_policies || [];
+    if (unreadable.length) {
+      const status = document.getElementById('iam-scan-status');
+      status.innerHTML = `⚠️ 有 ${unreadable.length} 个托管策略无法读取（权限不足或已删除），其授予的 Bedrock 权限可能被漏判：<br>`
+        + unreadable.map(a => `<code style="font-size:11px;background:#f5f0eb;padding:2px 6px;border-radius:3px;margin:1px;display:inline-block">${a}</code>`).join(' ');
+      status.style.color = '#c07830';
+    }
+
     const tbody = document.getElementById('iam-scan-body');
     tbody.innerHTML = '';
     for (const r of data.results) {
