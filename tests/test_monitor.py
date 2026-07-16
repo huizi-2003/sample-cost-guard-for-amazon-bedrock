@@ -28,6 +28,7 @@ def mock_env():
          patch('monitor.handler.get_regions', return_value=MOCK_PATCHES['monitor.handler.get_regions']), \
          patch('monitor.handler.get_webhook_config', return_value=MOCK_PATCHES['monitor.handler.get_webhook_config']), \
          patch('monitor.handler.get_account_id', return_value='123456789012'), \
+         patch('monitor.handler.query_by_pk', return_value=[]) as mock_query, \
          patch('monitor.handler.put_item') as mock_put_item, \
          patch('monitor.handler.fetch_region') as mock_fetch_region, \
          patch('monitor.handler.send_webhook_all') as mock_send_webhook, \
@@ -37,6 +38,7 @@ def mock_env():
             'put_item': mock_put_item,
             'fetch_region': mock_fetch_region,
             'send_webhook_all': mock_send_webhook,
+            'query_by_pk': mock_query,
         }
 
 
@@ -142,6 +144,7 @@ class TestBucketBoundaryAlignment:
              patch('monitor.handler.get_regions', return_value=['us-east-1']), \
              patch('monitor.handler.get_webhook_config', return_value=[]), \
              patch('monitor.handler.put_item'), \
+             patch('monitor.handler.query_by_pk', return_value=[]), \
              patch('monitor.handler.fetch_region', side_effect=capture_fetch_region) as mock_fr, \
              patch('monitor.handler.send_webhook_all'), \
              patch('monitor.handler.get_alert_state', return_value=None), \

@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
-from common.config import get_cost_thresholds, get_regions, get_alert_state, set_alert_state, get_webhook_config, put_item, get_account_id, get_monitor_enabled
+from common.config import get_cost_thresholds, get_regions, get_alert_state, set_alert_state, get_webhook_config, put_item, query_by_pk, get_account_id, get_monitor_enabled
 from common.pricing import estimate_cost
 from common.webhook import send_webhook_all
 from common.labels import extract_model_name, extract_token_type
@@ -115,6 +115,47 @@ def mark_alerted(window, now):
     set_alert_state(window, val)
 
 
+def _pick_baselines(records, now):
+    """从当天已有记录中选出 5min 和 15min 基线。
+
+    只认全 region 成功（complete=True）且带 cost_daily 字段的记录。
+    返回 (base_5min, base_15min)，无可用基线返回 None。
+    """
+    valid = [r for r in records
+             if r.get('complete') and 'cost_daily' in r]
+    valid.sort(key=lambda r: r['timestamp'])
+    base_5 = valid[-1] if valid else None
+    cutoff = (now - timedelta(minutes=15)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    older = [r for r in valid if r['timestamp'] <= cutoff]
+    base_15 = older[-1] if older else None
+    return base_5, base_15
+
+
+def _delta(cost_daily, base):
+    """计算费用增量：当前累计 - 基线累计，负值钳 0。
+
+    无基线时（午夜后第一轮）返回全天累计，即增量 = 本次全部费用。
+    """
+    if base is None:
+        return cost_daily
+    return max(cost_daily - float(base['cost_daily']), 0)
+
+
+def _model_deltas(models_daily_now, base):
+    """计算每模型 token 增量（当前 - 基线），供 Top 模型明细使用。
+
+    返回 {model: {token_type: delta_count}}，只包含有增量的模型。
+    """
+    base_models = (base or {}).get('models_daily') or {}
+    deltas = {}
+    for m, tc in models_daily_now.items():
+        base_tc = base_models.get(m, {})
+        d = {t: max(int(tc.get(t, 0)) - int(base_tc.get(t, 0)), 0) for t in TOKEN_TYPES}
+        if any(d.values()):
+            deltas[m] = d
+    return deltas
+
+
 def handler(event, context):
     # 总开关检查：关闭时跳过全部监控逻辑（省 CloudWatch 费用）
     if not get_monitor_enabled():
@@ -220,6 +261,11 @@ def handler(event, context):
                 region_count=len(region_results),
                 expire_at=expire_at,
                 models=all_models_5min if all_models_5min else None,
+                # delta 告警所需基线字段
+                cost_daily=str(round(cost['daily'], 6)),
+                models_daily={m: {t: int(tc.get(t, 0)) for t in TOKEN_TYPES}
+                              for m, tc in agg_models['daily'].items()} or None,
+                complete=(not failed_regions),
             )
         except Exception as e:
             logger.error(f"Failed to persist monitor record: {e}")
@@ -238,10 +284,34 @@ def handler(event, context):
             set_alert_state('cost_unconfigured', today)
         return {'statusCode': 200, 'alerts': [], 'cost_thresholds_configured': False}
 
+    # === Delta 告警判定 ===
+    # 读当天已有记录，选基线，算增量费用
+    utc_date = now.strftime('%Y-%m-%d')
+    try:
+        records_today = query_by_pk(f'MONITOR#{utc_date}')
+    except Exception as e:
+        logger.error(f"Failed to read today's monitor records for delta: {e}")
+        records_today = []
+
+    base_5, base_15 = _pick_baselines(records_today, now)
+
+    cost_eval = {
+        '5min':  _delta(cost['daily'], base_5),
+        '15min': _delta(cost['daily'], base_15),
+        'daily': cost['daily'],
+    }
+    logger.info(json.dumps({'cost_eval_5min': round(cost_eval['5min'], 4),
+                            'cost_eval_15min': round(cost_eval['15min'], 4),
+                            'cost_eval_daily': round(cost_eval['daily'], 4)}))
+
     alerts = []
     for window in ('5min', '15min', 'daily'):
-        if window in cost_thresholds and cost[window] > cost_thresholds[window]:
-            alerts.append({'window': window, 'cost': cost[window], 'threshold': cost_thresholds[window]})
+        if window in cost_thresholds and cost_eval[window] > cost_thresholds[window]:
+            alerts.append({'window': window, 'cost': cost_eval[window], 'threshold': cost_thresholds[window]})
+
+    # warm-up 保护：有历史记录但无有效基线时（过渡期），跳过 5min/15min 判定避免误报
+    if records_today and base_5 is None:
+        alerts = [a for a in alerts if a['window'] == 'daily']
 
     if alerts:
         alerts = [a for a in alerts if not should_suppress(a['window'], now, webhooks)]
@@ -250,7 +320,7 @@ def handler(event, context):
         alert = alerts[0]
         window = alert['window']
 
-        # 按预估 $ 排序 Top Region / Top 模型（数据取本轮已聚合结果，不再查 CloudWatch）
+        # 按预估 $ 排序 Top Region（仍用桶窗口口径，标注"近似"）
         region_costs = []
         for r in region_results:
             rc, _ = estimate_cost((r.get('models') or {}).get(window, {}))
@@ -259,8 +329,11 @@ def handler(event, context):
         region_costs.sort(key=lambda x: x[1], reverse=True)
         top_regions = region_costs[:5]
 
+        # Top 模型改用增量口径：展示新增费用来自哪个模型
+        base_for_window = base_5 if window == '5min' else (base_15 if window == '15min' else None)
+        model_delta_tokens = _model_deltas(agg_models['daily'], base_for_window)
         model_costs = []
-        for model_name, type_counts in agg_models[window].items():
+        for model_name, type_counts in model_delta_tokens.items():
             mc, _ = estimate_cost({model_name: type_counts})
             if mc > 0:
                 model_costs.append((model_name, mc))
@@ -269,13 +342,13 @@ def handler(event, context):
 
         msg = f"[Bedrock 费用提醒] 账号 {get_account_id()}\n"
         for a in alerts:
-            msg += f"  {a['window']}: 预估 ${a['cost']:,.2f} > ${a['threshold']:,.2f}\n"
+            msg += f"  {a['window']}: 预估增量 ${a['cost']:,.2f} > ${a['threshold']:,.2f}\n"
         if top_regions:
-            msg += f"\nTop Region（{window}，按预估 $）:\n"
+            msg += f"\nTop Region（{window}，近似）:\n"
             for region, rc in top_regions:
                 msg += f"  {region}: ${rc:,.2f}\n"
         if top_models:
-            msg += "\nTop 模型（按预估 $）:\n"
+            msg += "\nTop 模型（增量口径，按预估 $）:\n"
             for label, mc in top_models:
                 msg += f"  {label}: ${mc:,.2f}\n"
         if unpriced[window]:

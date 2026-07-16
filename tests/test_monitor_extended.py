@@ -149,6 +149,7 @@ class TestShouldSuppress:
         """Corrupted state data should send a warning and not suppress."""
         now = datetime(2024, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
         with patch('monitor.handler.get_alert_state', return_value='not-a-timestamp'), \
+             patch('monitor.handler.get_account_id', return_value='123456789012'), \
              patch('monitor.handler.send_webhook_all') as mock_send:
             result = should_suppress('15min', now, [{'url': 'http://hook', 'type': 'feishu'}])
         assert result is False
@@ -198,6 +199,7 @@ class TestHandlerAlerts:
              patch('monitor.handler.get_regions', return_value=['us-east-1', 'us-west-2']), \
              patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook.example.com', 'type': 'feishu'}]), \
              patch('monitor.handler.get_account_id', return_value='123456789012'), \
+             patch('monitor.handler.query_by_pk', return_value=[]) as mock_query, \
              patch('monitor.handler.put_item') as mock_put, \
              patch('monitor.handler.fetch_region') as mock_fetch, \
              patch('monitor.handler.send_webhook_all') as mock_send, \
@@ -207,6 +209,7 @@ class TestHandlerAlerts:
                 'put_item': mock_put,
                 'fetch_region': mock_fetch,
                 'send_webhook_all': mock_send,
+                'query_by_pk': mock_query,
             }
 
     def test_no_alert_when_under_all_thresholds(self, mock_env):
