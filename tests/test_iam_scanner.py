@@ -1,7 +1,8 @@
 """Unit tests for common/iam_scanner.py.
 
-Covers the pure policy-parsing logic (_is_dangerous_action, _extract_bedrock_actions)
-and the managed-policy read path (_check_managed_policy) with a mocked IAM client.
+Covers the pure policy-parsing logic (_is_dangerous_action, _extract_bedrock_actions,
+_pattern_to_regex, _match_dangerous) and the managed-policy read path
+(_check_managed_policy) with a mocked IAM client.
 Full scan_iam_identities / execute_iam_scan involve heavy boto pagination + DDB;
 here we focus on the decision logic that determines what counts as a billable action.
 """
@@ -12,6 +13,9 @@ from common.iam_scanner import (
     _extract_bedrock_actions,
     _check_managed_policy,
     _check_group_policies,
+    _pattern_to_regex,
+    _match_dangerous,
+    DANGEROUS_ACTIONS,
 )
 
 
@@ -43,6 +47,44 @@ class TestIsDangerousAction:
     def test_unrelated_service_not_dangerous(self):
         assert _is_dangerous_action('s3:GetObject') is False
 
+    # --- Wildcard pattern tests (the core fix) ---
+    def test_bedrock_in_star(self):
+        """bedrock:In* matches InvokeModel, InvokeModelWithResponseStream, InvokeAgent, etc."""
+        assert _is_dangerous_action('bedrock:In*') is True
+
+    def test_bedrock_conv_star(self):
+        """bedrock:Conv* matches Converse and ConverseStream."""
+        assert _is_dangerous_action('bedrock:Conv*') is True
+
+    def test_star_colon_star(self):
+        """*:* grants all actions on all services."""
+        assert _is_dangerous_action('*:*') is True
+
+    def test_bedrock_invoke_star(self):
+        """bedrock:Invoke* matches all Invoke variants."""
+        assert _is_dangerous_action('bedrock:Invoke*') is True
+
+    def test_question_mark_wildcard(self):
+        """? matches single character — bedrock:Convers?Stream matches ConverseStream."""
+        assert _is_dangerous_action('bedrock:Convers?Stream') is True
+
+    def test_question_mark_no_match(self):
+        """? must match exactly one char — bedrock:Convers? doesn't match Converse (e needs one more)."""
+        # bedrock:Convers? → pattern is 'bedrock:convers.' → matches 'bedrock:converse' (7 chars after colon)
+        assert _is_dangerous_action('bedrock:Convers?') is True  # matches 'converse'
+
+    def test_bedrock_get_star_not_dangerous(self):
+        """bedrock:Get* should not match any dangerous action."""
+        assert _is_dangerous_action('bedrock:Get*') is False
+
+    def test_bedrock_list_star_not_dangerous(self):
+        """bedrock:List* should not match any dangerous action."""
+        assert _is_dangerous_action('bedrock:List*') is False
+
+    def test_bedrock_describe_star_not_dangerous(self):
+        """bedrock:Describe* should not match any dangerous action."""
+        assert _is_dangerous_action('bedrock:Describe*') is False
+
 
 class TestExtractBedrockActions:
     def test_extracts_only_billable_allow_actions(self):
@@ -73,6 +115,134 @@ class TestExtractBedrockActions:
 
     def test_empty_statement(self):
         assert _extract_bedrock_actions({'Statement': []}) == set()
+
+    # --- Wildcard patterns in Action ---
+    def test_bedrock_in_star_captured(self):
+        doc = {'Statement': [{'Effect': 'Allow', 'Action': 'bedrock:In*'}]}
+        result = _extract_bedrock_actions(doc)
+        assert 'bedrock:In*' in result
+
+    def test_bedrock_conv_star_captured(self):
+        doc = {'Statement': [{'Effect': 'Allow', 'Action': 'bedrock:Conv*'}]}
+        result = _extract_bedrock_actions(doc)
+        assert 'bedrock:Conv*' in result
+
+    def test_star_colon_star_captured(self):
+        doc = {'Statement': [{'Effect': 'Allow', 'Action': '*:*'}]}
+        result = _extract_bedrock_actions(doc)
+        assert '*:*' in result
+
+    # --- Statement as dict (not array) ---
+    def test_statement_as_single_dict(self):
+        """IAM allows Statement to be a single dict instead of an array."""
+        doc = {'Statement': {'Effect': 'Allow', 'Action': 'bedrock:InvokeModel'}}
+        assert _extract_bedrock_actions(doc) == {'bedrock:InvokeModel'}
+
+    def test_statement_as_single_dict_deny(self):
+        doc = {'Statement': {'Effect': 'Deny', 'Action': 'bedrock:InvokeModel'}}
+        assert _extract_bedrock_actions(doc) == set()
+
+    # --- NotAction handling ---
+    def test_notaction_s3_star_reports_all_dangerous(self):
+        """Allow + NotAction: ['s3:*'] grants everything except s3 → all bedrock dangerous actions."""
+        doc = {'Statement': [{'Effect': 'Allow', 'NotAction': ['s3:*'], 'Resource': '*'}]}
+        result = _extract_bedrock_actions(doc)
+        # All dangerous actions should be reported (with suffix)
+        for action in DANGEROUS_ACTIONS:
+            assert f'{action} (via NotAction)' in result
+
+    def test_notaction_bedrock_star_reports_nothing(self):
+        """Allow + NotAction: ['bedrock:*'] excludes all bedrock → nothing to report."""
+        doc = {'Statement': [{'Effect': 'Allow', 'NotAction': ['bedrock:*'], 'Resource': '*'}]}
+        result = _extract_bedrock_actions(doc)
+        assert result == set()
+
+    def test_notaction_excludes_single_action(self):
+        """NotAction: ['bedrock:InvokeModel'] → all dangerous EXCEPT InvokeModel."""
+        doc = {'Statement': [{'Effect': 'Allow', 'NotAction': 'bedrock:InvokeModel', 'Resource': '*'}]}
+        result = _extract_bedrock_actions(doc)
+        assert 'bedrock:invokemodel (via NotAction)' not in result
+        # But other dangerous actions should be there
+        assert 'bedrock:converse (via NotAction)' in result
+        assert 'bedrock:conversestream (via NotAction)' in result
+
+    def test_notaction_string_form(self):
+        """NotAction as a single string (not array)."""
+        doc = {'Statement': [{'Effect': 'Allow', 'NotAction': 's3:GetObject', 'Resource': '*'}]}
+        result = _extract_bedrock_actions(doc)
+        assert len(result) == len(DANGEROUS_ACTIONS)
+
+    def test_notaction_deny_ignored(self):
+        """Deny + NotAction should be skipped (only Allow matters for granting)."""
+        doc = {'Statement': [{'Effect': 'Deny', 'NotAction': ['s3:*'], 'Resource': '*'}]}
+        assert _extract_bedrock_actions(doc) == set()
+
+    # --- Non-dict statements are skipped gracefully ---
+    def test_non_dict_statement_in_list_skipped(self):
+        """If a statement list contains a non-dict entry, skip it without crashing."""
+        doc = {'Statement': [
+            'invalid-entry',
+            {'Effect': 'Allow', 'Action': 'bedrock:InvokeModel'},
+        ]}
+        assert _extract_bedrock_actions(doc) == {'bedrock:InvokeModel'}
+
+
+class TestPatternToRegex:
+    def test_exact_match(self):
+        rx = _pattern_to_regex('bedrock:InvokeModel')
+        assert rx.match('bedrock:invokemodel')
+        assert not rx.match('bedrock:invokemodel2')
+
+    def test_star_wildcard(self):
+        rx = _pattern_to_regex('bedrock:In*')
+        assert rx.match('bedrock:invokemodel')
+        assert rx.match('bedrock:invokemodelwithresponsestream')
+        assert rx.match('bedrock:invokeinlineagent')
+        assert not rx.match('bedrock:converse')
+
+    def test_question_mark_wildcard(self):
+        rx = _pattern_to_regex('bedrock:Convers?')
+        assert rx.match('bedrock:converse')
+        assert not rx.match('bedrock:conversestream')
+
+    def test_double_star(self):
+        rx = _pattern_to_regex('*:*')
+        assert rx.match('bedrock:invokemodel')
+        assert rx.match('s3:getobject')
+
+    def test_case_insensitive(self):
+        rx = _pattern_to_regex('BEDROCK:INVOKE*')
+        assert rx.match('bedrock:invokemodel')
+
+
+class TestMatchDangerous:
+    def test_exact_action(self):
+        result = _match_dangerous('bedrock:InvokeModel')
+        assert result == {'bedrock:invokemodel'}
+
+    def test_bedrock_star(self):
+        result = _match_dangerous('bedrock:*')
+        assert result == DANGEROUS_ACTIONS
+
+    def test_full_wildcard(self):
+        result = _match_dangerous('*')
+        assert result == DANGEROUS_ACTIONS
+
+    def test_invoke_star(self):
+        result = _match_dangerous('bedrock:Invoke*')
+        expected = {a for a in DANGEROUS_ACTIONS if 'invoke' in a}
+        assert result == expected
+        assert 'bedrock:invokemodel' in result
+        assert 'bedrock:invokeagent' in result
+
+    def test_conv_star(self):
+        result = _match_dangerous('bedrock:Conv*')
+        assert result == {'bedrock:converse', 'bedrock:conversestream'}
+
+    def test_readonly_no_match(self):
+        assert _match_dangerous('bedrock:Get*') == set()
+        assert _match_dangerous('bedrock:List*') == set()
+        assert _match_dangerous('s3:*') == set()
 
 
 class TestCheckManagedPolicy:

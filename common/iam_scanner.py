@@ -7,6 +7,7 @@
 从 web/app.py 抽出，使 web app 只保留 route handler，扫描逻辑集中在此。
 """
 import logging
+import re
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -18,46 +19,90 @@ _IAM_CONFIG = BotoConfig(retries={'max_attempts': 10, 'mode': 'adaptive'})
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# 能产生调用/费用的 Bedrock Action 前缀（排除只读的 List/Get/Describe）
-_DANGEROUS_PREFIXES = (
-    'bedrock:invoke',
-    'bedrock:createmodelinvocation',
-    'bedrock:createmodelcustomization',
-    'bedrock:createprovisionedmodel',
-    'bedrock:applyguardrail',
-    'bedrock:retrieve',
-    'bedrock:conversestream',
+# 能产生 Bedrock 调用/费用的具体 Action（全小写）。
+# 维护具体清单而非前缀，才能正确处理 bedrock:In*、*:* 这类通配符写法。
+# 参考: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonbedrock.html
+DANGEROUS_ACTIONS = frozenset((
+    'bedrock:invokemodel',
+    'bedrock:invokemodelwithresponsestream',
     'bedrock:converse',
-)
+    'bedrock:conversestream',
+    'bedrock:invokeagent',
+    'bedrock:invokeflow',
+    'bedrock:invokeinlineagent',
+    'bedrock:retrieve',
+    'bedrock:retrieveandgenerate',
+    'bedrock:applyguardrail',
+    'bedrock:createmodelinvocationjob',
+    'bedrock:createmodelcustomizationjob',
+    'bedrock:createprovisionedmodelthroughput',
+))
+
+
+def _pattern_to_regex(pattern):
+    """IAM Action pattern → compiled regex.
+
+    IAM 只支持 * 和 ? 两种通配符，大小写不敏感。
+    不用 fnmatch——它把 [] 当字符类，IAM 没有这个语义。
+    """
+    escaped = re.escape(pattern.lower()).replace(r'\*', '.*').replace(r'\?', '.')
+    return re.compile('^' + escaped + '$')
+
+
+def _match_dangerous(pattern):
+    """返回该 pattern 能命中的具体危险 Action 集合。"""
+    rx = _pattern_to_regex(pattern)
+    return {a for a in DANGEROUS_ACTIONS if rx.match(a)}
 
 
 def _is_dangerous_action(action):
-    """判断一个 action 是否能产生 Bedrock 调用/费用。"""
-    lower = action.lower()
-    if lower == '*' or lower == 'bedrock:*':
-        return True
-    return any(lower.startswith(p) for p in _DANGEROUS_PREFIXES)
+    """判断一个 action pattern 是否能命中任何可产生 Bedrock 调用/费用的 Action。"""
+    return bool(_match_dangerous(action))
 
 
 def _extract_bedrock_actions(policy_doc):
-    """从策略文档提取能产生 Bedrock 调用的危险 Action。返回 set of action strings。"""
+    """从策略文档提取能产生 Bedrock 调用的危险 Action。返回 set of action strings。
+
+    处理三种授权路径：
+      1. Allow + Action: pattern 能命中 DANGEROUS_ACTIONS 的条目
+      2. Allow + NotAction: 除排除清单外的全部权限 → 报出未被覆盖的危险 Action
+      3. Statement 为单个 dict（非数组）的合法 IAM 文档
+
+    注意：Deny 不做抵扣。完整 IAM 求值（Deny 优先、Resource/Condition、
+    Permission Boundary、SCP）超出本扫描器定位。忽略 Deny 只产生误报（多报），
+    不会漏报，对"盗刷排查"场景是安全的方向。
+    """
     actions = set()
     if not isinstance(policy_doc, dict):
         return actions
-    for stmt in policy_doc.get('Statement', []):
+    statements = policy_doc.get('Statement', [])
+    # IAM 允许 Statement 为单个 dict 而非数组
+    if isinstance(statements, dict):
+        statements = [statements]
+    for stmt in statements:
+        if not isinstance(stmt, dict):
+            continue
         if stmt.get('Effect') != 'Allow':
             continue
-        stmt_actions = stmt.get('Action', [])
-        if isinstance(stmt_actions, str):
-            stmt_actions = [stmt_actions]
-        for action in stmt_actions:
-            lower = action.lower()
-            # 先匹配 bedrock 相关或全权限
-            if not (lower.startswith('bedrock:') or lower == '*'):
-                continue
-            # 只保留能产生调用/费用的
-            if _is_dangerous_action(action):
-                actions.add(action)
+
+        if 'Action' in stmt:
+            patterns = stmt['Action']
+            if isinstance(patterns, str):
+                patterns = [patterns]
+            for p in patterns:
+                if _match_dangerous(p):
+                    actions.add(p)
+
+        elif 'NotAction' in stmt:
+            not_patterns = stmt['NotAction']
+            if isinstance(not_patterns, str):
+                not_patterns = [not_patterns]
+            regexes = [_pattern_to_regex(p) for p in not_patterns]
+            granted = {a for a in DANGEROUS_ACTIONS
+                       if not any(rx.match(a) for rx in regexes)}
+            for a in granted:
+                actions.add(f'{a} (via NotAction)')
+
     return actions
 
 
