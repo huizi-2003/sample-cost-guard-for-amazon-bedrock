@@ -51,7 +51,7 @@ async def index():
 @app.get('/static/{file_path:path}')
 async def static_files(file_path: str):
     full_path = os.path.realpath(os.path.join(STATIC_DIR, file_path))
-    if not full_path.startswith(os.path.realpath(STATIC_DIR)):
+    if not full_path.startswith(os.path.realpath(STATIC_DIR) + os.sep):
         return JSONResponse({'error': 'Not found'}, status_code=404)
     if os.path.isfile(full_path):
         return FileResponse(full_path)
