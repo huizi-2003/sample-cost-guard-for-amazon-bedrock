@@ -122,8 +122,16 @@ def handler(event, context):
 
     now = datetime.now(timezone.utc)
     start_daily = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_15min = now - timedelta(minutes=15)
-    start_5min = now - timedelta(minutes=5)
+    # CloudWatch 以 Period=300 从 UTC 零点对齐桶边界（00:00, 00:05, 00:10, ...）。
+    # 若 start 不对齐到桶边界，会系统性漏掉跨越窗口起点的那个桶（该桶 timestamp < start），
+    # 导致每次运行只看到 ~2.5min 数据（约 50% 丢失）。向下取整到 300s 边界消除此问题。
+    def _floor_to_period(ts, period=300):
+        epoch = int(ts.timestamp())
+        floored = epoch - (epoch % period)
+        return datetime.fromtimestamp(floored, tz=timezone.utc)
+
+    start_5min = _floor_to_period(now - timedelta(minutes=5))
+    start_15min = _floor_to_period(now - timedelta(minutes=15))
 
     webhooks = get_webhook_config()
 

@@ -4,9 +4,12 @@ Validates Requirements 3.4, 3.5, 3.6:
 - put_item is called with correct PK/SK format after successful aggregation
 - put_item is NOT called when region_results is empty
 - DDB write failure is logged but does not prevent alert evaluation
+
+Also tests bucket boundary alignment for 5min/15min windows.
 """
 import re
 import pytest
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
 
 
@@ -104,3 +107,89 @@ class TestMonitorPersistence:
         assert '5min' in result['alerts']
         # Webhook should have been called for the alert
         mock_env['send_webhook_all'].assert_called()
+
+
+class TestBucketBoundaryAlignment:
+    """Tests that start_5min and start_15min are floored to 300s CW bucket boundaries.
+
+    CloudWatch aligns metric buckets to Period=300 from UTC midnight (00:00, 00:05, 00:10, ...).
+    If the monitor's window start is not bucket-aligned, it systematically misses the bucket
+    straddling the window boundary, losing ~50% of 5min data every run.
+    """
+
+    def _run_handler_and_capture_start_times(self, fake_now):
+        """Run handler with a fake `now` and capture the start_5min/start_15min passed to fetch_region."""
+        captured = {}
+
+        def capture_fetch_region(region, start_daily, start_15min, start_5min, end):
+            captured['start_daily'] = start_daily
+            captured['start_15min'] = start_15min
+            captured['start_5min'] = start_5min
+            captured['end'] = end
+            return {'region': region, '5min': 0, '15min': 0, 'daily': 0, 'models': {}}
+
+        with patch('monitor.handler.get_monitor_enabled', return_value=True), \
+             patch('monitor.handler.get_cost_thresholds', return_value={'5min': 1e12, '15min': 1e12, 'daily': 1e12}), \
+             patch('monitor.handler.get_regions', return_value=['us-east-1']), \
+             patch('monitor.handler.get_webhook_config', return_value=[]), \
+             patch('monitor.handler.put_item'), \
+             patch('monitor.handler.fetch_region', side_effect=capture_fetch_region) as mock_fr, \
+             patch('monitor.handler.send_webhook_all'), \
+             patch('monitor.handler.get_alert_state', return_value=None), \
+             patch('monitor.handler.set_alert_state'), \
+             patch('monitor.handler.datetime') as mock_dt:
+            mock_dt.now.return_value = fake_now
+            mock_dt.fromtimestamp = datetime.fromtimestamp
+            # handler uses datetime.now(timezone.utc)
+            from monitor.handler import handler
+            handler({}, None)
+
+        return captured
+
+    def test_5min_start_aligned_to_300s_boundary(self):
+        """start_5min should be floored to the nearest 300s boundary before (now - 5min)."""
+        # 10:07:35 UTC → now - 5min = 10:02:35 → floor to 10:00:00 (bucket 10:00)
+        fake_now = datetime(2026, 7, 16, 10, 7, 35, tzinfo=timezone.utc)
+        captured = self._run_handler_and_capture_start_times(fake_now)
+
+        expected = datetime(2026, 7, 16, 10, 0, 0, tzinfo=timezone.utc)
+        assert captured['start_5min'] == expected, \
+            f"start_5min should be 10:00:00 but got {captured['start_5min']}"
+
+    def test_15min_start_aligned_to_300s_boundary(self):
+        """start_15min should be floored to the nearest 300s boundary before (now - 15min)."""
+        # 10:07:35 UTC → now - 15min = 09:52:35 → floor to 09:50:00 (bucket 09:50)
+        fake_now = datetime(2026, 7, 16, 10, 7, 35, tzinfo=timezone.utc)
+        captured = self._run_handler_and_capture_start_times(fake_now)
+
+        expected = datetime(2026, 7, 16, 9, 50, 0, tzinfo=timezone.utc)
+        assert captured['start_15min'] == expected, \
+            f"start_15min should be 09:50:00 but got {captured['start_15min']}"
+
+    def test_already_aligned_time_unchanged(self):
+        """If now - 5min already falls on a bucket boundary, it should stay the same."""
+        # 10:10:00 UTC → now - 5min = 10:05:00 → already aligned → stays 10:05:00
+        fake_now = datetime(2026, 7, 16, 10, 10, 0, tzinfo=timezone.utc)
+        captured = self._run_handler_and_capture_start_times(fake_now)
+
+        expected = datetime(2026, 7, 16, 10, 5, 0, tzinfo=timezone.utc)
+        assert captured['start_5min'] == expected, \
+            f"start_5min should be 10:05:00 but got {captured['start_5min']}"
+
+    def test_worst_case_phase_just_after_boundary(self):
+        """Worst case: trigger at 10:05:30 → now-5min = 10:00:30 → floor to 10:00:00.
+        Without alignment, the 10:00 bucket (ts=10:00:00 < 10:00:30) would be excluded."""
+        fake_now = datetime(2026, 7, 16, 10, 5, 30, tzinfo=timezone.utc)
+        captured = self._run_handler_and_capture_start_times(fake_now)
+
+        expected = datetime(2026, 7, 16, 10, 0, 0, tzinfo=timezone.utc)
+        assert captured['start_5min'] == expected, \
+            f"start_5min should be 10:00:00 but got {captured['start_5min']}"
+
+    def test_start_daily_unchanged(self):
+        """start_daily should remain midnight (already naturally aligned)."""
+        fake_now = datetime(2026, 7, 16, 10, 7, 35, tzinfo=timezone.utc)
+        captured = self._run_handler_and_capture_start_times(fake_now)
+
+        expected = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)
+        assert captured['start_daily'] == expected
