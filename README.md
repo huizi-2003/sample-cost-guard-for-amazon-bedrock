@@ -50,7 +50,11 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 - **CW 查询方式**（与 reconciler 不同）：直接 SEARCH per-model 指标并返回原始数据点（`ReturnData=True`, Period=300），代码侧按时间戳切分 5min/15min/daily 窗口，同时获得每模型每类型明细；BedrockMantle 使用 `SEARCH('{AWS/BedrockMantle,Model} Tokens', 'Sum', 300)` 聚合 metric
 - **总开关**：DDB `CONFIG#monitor_enabled`，设为 `false` 时跳过全部监控逻辑（省 CloudWatch 费用），默认开启。通过 Web Console 配置管理页面切换
 - 监控 Region：首次运行自动写入一组默认区域（us-east-1/us-east-2/us-west-1/us-west-2/eu-central-1/eu-west-1/eu-west-3/ap-northeast-1/ap-southeast-1/ap-southeast-2），可通过 Web Console 修改
-- 三层阈值告警（5min / 15min / daily），超阈值推送告警（阈值单位为美元 $）
+- **Delta 增量告警**（5min / 15min / daily 三层阈值，单位为美元 $）：
+  - 5min/15min 窗口：比较当前 daily 累计与基线记录的**增量**（delta = 当前累计 - 基线累计），增量超阈值才告警，避免累计值持续触发
+  - daily 窗口：直接比较当日累计总量
+  - 基线选取：从当天已有完整记录中取最近 5min/15min 内的快照
+  - warm-up 保护：无有效基线时跳过 5min/15min 判定，避免冷启动误报
 - 告警附带 Top Region + Top Model 明细
 - 告警抑制（15min/daily 窗口避免重复轰炸）
 - **数据持久化**：每次运行结果写入 DynamoDB（PK=`MONITOR#{date}`, SK=`T#{HH:MM}`），含 5min 总量、daily 累计、各模型按 token 类型拆分明细（input/output/cache_read/cache_write），2 天 TTL 自动过期
@@ -196,9 +200,9 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
   - 可展开 CW 各 region 明细（每 region 的 token 总量）
   - 对账指标卡片（总费用、模型数、CE/CW token 总量、对账差异百分比）
   - 历史回填功能：指定天数批量触发 reconciler 补录历史数据
-- **今日监控**：
-  - **预估费用卡片**（今日预估总费用、Top 模型费用、未定价模型数）
-  - **累计费用趋势线**（按 5 分钟粒度，实时更新）
+- **今日监控**（滚动 24 小时窗口）：
+  - **预估费用卡片**（最近 24h 预估总费用、Top 模型费用、未定价模型数）
+  - **累计费用趋势线**（按 5 分钟粒度，滚动 24h，实时更新）
   - 每小时用量图表（模型维度堆叠，增量展示）
   - 每 5 分钟自动刷新
 - **配置管理**：阈值、监控 Region 列表、Webhook 设置
@@ -408,10 +412,12 @@ bedrock-cost-guard/
 ├── tests/                 # 单元测试
 │   ├── test_config.py
 │   ├── test_monitor.py
+│   ├── test_monitor_delta.py
 │   ├── test_monitor_extended.py
 │   ├── test_reconciler.py
 │   ├── test_reconciler_extended.py
 │   ├── test_web_api.py
+│   ├── test_web_crossyear.py
 │   ├── test_web_extended.py
 │   ├── test_webhook.py
 │   ├── test_iam_scanner.py
