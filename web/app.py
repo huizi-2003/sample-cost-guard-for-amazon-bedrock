@@ -279,12 +279,12 @@ def _monitor_models_last24h():
     if has_models:
         all_models = {}
         for item in items:
-            # 用 timestamp 生成带日期前缀的时间 key
+            # 内部 key 使用完整可排序格式 "YYYY-MM-DD HH:MM"（跨年安全）
             ts_raw = item.get('timestamp', '')
             if ts_raw:
-                time_str = ts_raw[5:7] + '/' + ts_raw[8:10] + ' ' + ts_raw[11:16]
+                time_str = ts_raw[:16].replace('T', ' ')  # '2026-07-16T14:05:00Z' → '2026-07-16 14:05'
             else:
-                time_str = item['SK'].replace('T#', '')
+                time_str = item['PK'].replace('MONITOR#', '') + ' ' + item['SK'].replace('T#', '')
             models = item.get('models')
             if not models:
                 continue
@@ -304,7 +304,7 @@ def _monitor_models_last24h():
             series = []
             for t, v in points:
                 cumulative += v
-                series.append({'time': t, 'tokens': cumulative})
+                series.append({'time': t[5:].replace('-', '/'), 'tokens': cumulative})
             result[model] = series
         return result
 
@@ -344,7 +344,7 @@ def _fetch_models_from_cw_last24h():
         series = []
         for t, v in points:
             cumulative += v
-            series.append({'time': t, 'tokens': int(cumulative)})
+            series.append({'time': t[5:].replace('-', '/'), 'tokens': int(cumulative)})
         result[model] = series
     return result
 
@@ -365,7 +365,7 @@ def _fetch_region_models_24h(region, start, end):
             continue
         for ts, val in zip(r['Timestamps'], r['Values']):
             if val > 0:
-                ts_str = ts.astimezone(timezone.utc).strftime('%m/%d %H:%M')
+                ts_str = ts.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M')
                 models.setdefault(label, []).append((ts_str, val))
     return models
 
@@ -472,12 +472,13 @@ def _calc_cost_from_ddb(items):
     unpriced = set()
 
     for item in items:
-        # 用 timestamp 字段生成带日期的时间 key（如 "07/13 22:57"）
+        # 内部 key 使用完整可排序格式 "YYYY-MM-DD HH:MM"（字典序==时间序，跨年安全）
         ts_raw = item.get('timestamp', '')
         if ts_raw:
-            time_str = ts_raw[5:7] + '/' + ts_raw[8:10] + ' ' + ts_raw[11:16]
+            time_str = ts_raw[:16].replace('T', ' ')  # '2026-07-16T14:05:00Z' → '2026-07-16 14:05'
         else:
-            time_str = item['SK'].replace('T#', '')
+            # fallback: 从 PK + SK 拼出完整 key
+            time_str = item['PK'].replace('MONITOR#', '') + ' ' + item['SK'].replace('T#', '')
         models = item.get('models')
         if not models:
             continue
@@ -539,7 +540,7 @@ async def _calc_cost_from_cw():
             token_type = _extract_token_type(label)
             for ts, val in zip(r['Timestamps'], r['Values']):
                 if val > 0:
-                    ts_str = ts.astimezone(timezone.utc).strftime('%m/%d %H:%M')
+                    ts_str = ts.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M')
                     results.append((model_name, token_type, ts_str, val))
         return results
 
@@ -583,12 +584,12 @@ def _build_cost_response(model_totals, timeline_points, unpriced):
         }
         total_cost += cost
 
-    # 累计费用趋势线
+    # 累计费用趋势线（内部 key 为 YYYY-MM-DD HH:MM，排序后格式化为前端 MM/DD HH:MM）
     timeline = []
     cumulative = 0
     for time_str in sorted(timeline_points.keys()):
         cumulative += timeline_points[time_str]
-        timeline.append({'time': time_str, 'cost': round(cumulative, 6)})
+        timeline.append({'time': time_str[5:].replace('-', '/'), 'cost': round(cumulative, 6)})
 
     return {
         'total_cost': round(total_cost, 4),
