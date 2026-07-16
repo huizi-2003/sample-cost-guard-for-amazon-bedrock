@@ -6,6 +6,10 @@ from urllib.request import Request, urlopen
 logger = logging.getLogger(__name__)
 
 
+class WebhookError(Exception):
+    """Webhook 发送最终失败（网络错误或渠道 API 返回错误码，重试后仍失败）。"""
+
+
 def _build_payload(message, webhook_type):
     """根据渠道类型构造对应的 payload 格式。
 
@@ -27,16 +31,16 @@ def _build_payload(message, webhook_type):
 
 
 def _check_response(body, webhook_type):
-    """检查各渠道的响应是否表示发送成功"""
+    """检查各渠道的响应是否表示发送成功，返回 True/False"""
     if webhook_type == 'feishu':
         if body.get('code', 0) != 0:
             logger.error(f"Feishu webhook error: {body}")
-    elif webhook_type == 'dingtalk':
+            return False
+    elif webhook_type in ('dingtalk', 'wecom'):
         if body.get('errcode', 0) != 0:
-            logger.error(f"DingTalk webhook error: {body}")
-    elif webhook_type == 'wecom':
-        if body.get('errcode', 0) != 0:
-            logger.error(f"WeCom webhook error: {body}")
+            logger.error(f"{webhook_type} webhook error: {body}")
+            return False
+    return True
 
 
 def send_webhook(message, webhook_url, webhook_type='feishu'):
@@ -46,6 +50,9 @@ def send_webhook(message, webhook_url, webhook_type='feishu'):
         message: 通知文本内容
         webhook_url: webhook 地址
         webhook_type: 渠道类型，支持 feishu / dingtalk / wecom
+
+    Raises:
+        WebhookError: 两次尝试均失败（网络异常或渠道 API 返回错误码）
     """
     if not webhook_url:
         logger.warning("No webhook URL configured, skipping notification")
@@ -54,16 +61,23 @@ def send_webhook(message, webhook_url, webhook_type='feishu'):
     payload = _build_payload(message, webhook_type)
     req = Request(webhook_url, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json'})
 
+    last_error = None
     for attempt in range(2):
         try:
             resp = urlopen(req, timeout=10)
             body = json.loads(resp.read().decode())
-            _check_response(body, webhook_type)
-            return
+            if _check_response(body, webhook_type):
+                return
+            last_error = WebhookError(f"{webhook_type} API error: {body}")
+        except WebhookError:
+            raise
         except Exception as e:
             logger.error(f"Webhook attempt {attempt + 1} failed: {e}")
-            if attempt == 0:
-                time.sleep(1)
+            last_error = e
+        if attempt == 0:
+            time.sleep(1)
+
+    raise WebhookError(f"Webhook delivery failed after 2 attempts: {last_error}") from last_error
 
 
 def send_webhook_all(message, webhooks):
@@ -77,11 +91,15 @@ def send_webhook_all(message, webhooks):
     Args:
         message: 通知文本内容
         webhooks: list[dict]，每个 dict 含 url/type 字段（来自 get_webhook_config()）
+
+    Returns:
+        list[str]: 发送失败的渠道 name 列表（全部成功时为空列表）
     """
     if not webhooks:
         logger.warning("No webhook configured, skipping notification")
-        return
+        return []
 
+    failed = []
     for wh in webhooks:
         url = wh.get('url', '')
         wh_type = wh.get('type', 'feishu')
@@ -94,3 +112,8 @@ def send_webhook_all(message, webhooks):
             logger.info(f"Webhook '{name}' ({wh_type}) sent successfully")
         except Exception as e:
             logger.error(f"Webhook '{name}' ({wh_type}) failed: {e}")
+            failed.append(name)
+
+    if failed:
+        logger.error(f"Notification NOT delivered to {len(failed)} channel(s): {', '.join(failed)}")
+    return failed

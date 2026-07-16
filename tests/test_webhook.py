@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import patch, MagicMock, call
 from urllib.error import URLError
 
-from common.webhook import send_webhook, _build_payload, _check_response
+from common.webhook import send_webhook, send_webhook_all, _build_payload, _check_response, WebhookError
 
 
 # === _build_payload tests ===
@@ -89,10 +89,11 @@ class TestSendWebhook:
     @patch('common.webhook.time.sleep')
     @patch('common.webhook.urlopen')
     def test_max_two_attempts_on_persistent_failure(self, mock_urlopen, mock_sleep):
-        """Both attempts fail - should not retry more than twice."""
+        """Both attempts fail - should raise WebhookError after two attempts."""
         mock_urlopen.side_effect = [URLError("timeout"), URLError("timeout")]
 
-        send_webhook("test", "https://hook.example.com/abc", "feishu")
+        with pytest.raises(WebhookError):
+            send_webhook("test", "https://hook.example.com/abc", "feishu")
 
         assert mock_urlopen.call_count == 2
         mock_sleep.assert_called_once_with(1)
@@ -165,7 +166,7 @@ class TestCheckResponse:
         import logging
         with caplog.at_level(logging.ERROR):
             _check_response({"errcode": 300001, "errmsg": "invalid token"}, "dingtalk")
-        assert "DingTalk webhook error" in caplog.text
+        assert "dingtalk webhook error" in caplog.text
 
     def test_wecom_success(self, caplog):
         import logging
@@ -177,4 +178,4 @@ class TestCheckResponse:
         import logging
         with caplog.at_level(logging.ERROR):
             _check_response({"errcode": 93000, "errmsg": "invalid webhook url"}, "wecom")
-        assert "WeCom webhook error" in caplog.text
+        assert "wecom webhook error" in caplog.text
