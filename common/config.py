@@ -87,6 +87,8 @@ def set_alert_state(window, value):
 
 def save_reconcile_record(date, model, data):
     from datetime import datetime, timedelta, timezone
+    # 注意：90 天 TTL 是 get_reconcile_dates 全表 Scan 成本可接受的前提，
+    # 若要延长保留期，需同步把该函数的 Scan 改为日期索引 Query。
     expire_at = int((datetime.now(timezone.utc) + timedelta(days=90)).timestamp())
     put_item(f'RECONCILE#{date}', model, expire_at=expire_at, **data)
 
@@ -172,7 +174,14 @@ def save_notify_policy(policy):
 
 
 def get_reconcile_dates(limit=30):
-    """获取最近有对账数据的日期列表（带分页）"""
+    """获取最近有对账数据的日期列表（带分页）。
+
+    实现是全表 Scan + Filter，成本可接受的前提是表处于 TTL 稳态（几 MB 量级）：
+      - RECONCILE#* 记录 90 天 TTL（见 save_reconcile_record）
+      - MONITOR#* 记录 2 天 TTL
+    若将来延长对账 TTL 到年级别、或往本表新增无 TTL 的大体量记录类型，
+    此 Scan 会随之退化，届时应改为写入时维护日期索引项（固定 PK + Query）。
+    """
     table = _get_table()
     all_items = []
     scan_kwargs = {
