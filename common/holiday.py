@@ -18,9 +18,12 @@ JSON 数据结构：
   2. 如果日期在数据中且 isOffDay=false → 调休上班日（推送）
   3. 如果日期不在数据中 → 看星期：周一~周五=工作日，周六日=休息日
 
-容错：
-  - API 请求失败时 fallback 到纯星期判断（周一~周五为工作日）
-  - 结果缓存 24 小时，避免重复请求
+容错（三级 fallback）：
+  1. 内存缓存（24h TTL）
+  2. GitHub 拉取 → 成功则写回内存 + DDB
+  3. 拉取失败 → 过期内存缓存 → DDB 二级缓存 → None（退化为星期判断）
+
+  节假日数据一年内几乎不变，旧数据远比纯星期判断可靠。
 """
 
 import json
@@ -58,19 +61,65 @@ def _fetch_holiday_data(year):
         return None
 
 
+def _read_ddb_cache(year):
+    """从 DDB 读取节假日缓存。失败返回 None（不抛异常）。"""
+    try:
+        from common.config import get_item
+        item = get_item('HOLIDAY', str(year))
+        if item and 'data' in item:
+            return {
+                'data': json.loads(item['data']),
+                'fetched_at': float(item.get('fetched_at', 0)),
+            }
+    except Exception as e:
+        logger.warning(f"DDB holiday cache read failed for {year}: {e}")
+    return None
+
+
+def _write_ddb_cache(year, data, fetched_at):
+    """将节假日数据写入 DDB。失败仅打日志（不影响主逻辑）。"""
+    try:
+        from common.config import put_item
+        put_item('HOLIDAY', str(year), data=json.dumps(data), fetched_at=str(fetched_at))
+    except Exception as e:
+        logger.warning(f"DDB holiday cache write failed for {year}: {e}")
+
+
 def _get_holiday_map(year):
-    """获取指定年份的节假日映射（带缓存）。"""
+    """获取指定年份的节假日映射（三级缓存 fallback）。"""
     now_ts = datetime.now(timezone.utc).timestamp()
 
+    # 1. 内存缓存命中且未过期 → 直接返回
     if year in _cache:
         entry = _cache[year]
         if now_ts - entry['fetched_at'] < CACHE_TTL:
             return entry['data']
 
+    # 2. GitHub 拉取
     data = _fetch_holiday_data(year)
     if data is not None:
         _cache[year] = {'data': data, 'fetched_at': now_ts}
-    return data
+        try:
+            _write_ddb_cache(year, data, now_ts)
+        except Exception:
+            pass  # _write_ddb_cache 内部已有日志，此处兜底防止未预期异常
+        return data
+
+    # 3. 拉取失败 → 过期内存缓存兜底（节假日数据年内基本不变，旧数据优于星期判断）
+    if year in _cache:
+        logger.warning(f"Holiday data refresh failed for {year}, using stale memory cache")
+        return _cache[year]['data']
+
+    # 4. 冷启动无内存 → DDB 二级缓存
+    ddb_entry = _read_ddb_cache(year)
+    if ddb_entry is not None:
+        logger.warning(f"Holiday data refresh failed for {year}, using DDB cache")
+        # 写回内存（保留 DDB 中的 fetched_at，保持"过期"状态以便下次重试 GitHub）
+        _cache[year] = ddb_entry
+        return ddb_entry['data']
+
+    # 5. 全部失败 → None，is_workday 退化为星期判断
+    return None
 
 
 def is_workday(date):
