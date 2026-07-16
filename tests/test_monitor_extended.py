@@ -197,6 +197,7 @@ class TestHandlerAlerts:
              patch('monitor.handler.get_cost_thresholds', return_value={'5min': 1e12, '15min': 1e12, 'daily': 1e12}), \
              patch('monitor.handler.get_regions', return_value=['us-east-1', 'us-west-2']), \
              patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook.example.com', 'type': 'feishu'}]), \
+             patch('monitor.handler.get_account_id', return_value='123456789012'), \
              patch('monitor.handler.put_item') as mock_put, \
              patch('monitor.handler.fetch_region') as mock_fetch, \
              patch('monitor.handler.send_webhook_all') as mock_send, \
@@ -298,6 +299,7 @@ class TestHandlerAlerts:
         with patch('monitor.handler.get_monitor_enabled', return_value=True), \
              patch('monitor.handler.get_cost_thresholds', side_effect=Exception("DDB timeout")), \
              patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook', 'type': 'feishu'}]), \
+             patch('monitor.handler.get_account_id', return_value='123456789012'), \
              patch('monitor.handler.send_webhook_all') as mock_send:
             from monitor.handler import handler
             result = handler({}, None)
@@ -310,6 +312,7 @@ class TestHandlerAlerts:
              patch('monitor.handler.get_cost_thresholds', return_value={'5min': 1e12, '15min': 1e12, 'daily': 1e12}), \
              patch('monitor.handler.get_regions', return_value=[]), \
              patch('monitor.handler.get_webhook_config', return_value=[{'name': 'feishu', 'url': 'https://hook', 'type': 'feishu'}]), \
+             patch('monitor.handler.get_account_id', return_value='123456789012'), \
              patch('monitor.handler.send_webhook_all') as mock_send:
             from monitor.handler import handler
             result = handler({}, None)

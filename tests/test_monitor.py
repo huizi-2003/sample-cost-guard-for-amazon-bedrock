@@ -27,6 +27,7 @@ def mock_env():
          patch('monitor.handler.get_cost_thresholds', return_value=MOCK_PATCHES['monitor.handler.get_cost_thresholds']), \
          patch('monitor.handler.get_regions', return_value=MOCK_PATCHES['monitor.handler.get_regions']), \
          patch('monitor.handler.get_webhook_config', return_value=MOCK_PATCHES['monitor.handler.get_webhook_config']), \
+         patch('monitor.handler.get_account_id', return_value='123456789012'), \
          patch('monitor.handler.put_item') as mock_put_item, \
          patch('monitor.handler.fetch_region') as mock_fetch_region, \
          patch('monitor.handler.send_webhook_all') as mock_send_webhook, \
