@@ -239,10 +239,23 @@ def handler(event, context):
                             'cost_15min': round(cost['15min'], 4),
                             'cost_daily': round(cost['daily'], 4)}))
 
+    # === Delta 基线读取 ===
+    # 必须在写入本轮记录之前读：否则查回的最新记录就是本轮刚写的自己
+    # （complete=True、cost_daily=当前值），基线==当前值 → delta 恒为 0，
+    # 5min 告警永久失效。且 DDB Query 最终一致，偶尔读不到自己时告警
+    # 又"碰巧能用"，故障是非确定性的，更难排查。
+    utc_date = now.strftime('%Y-%m-%d')
+    try:
+        records_today = query_by_pk(f'MONITOR#{utc_date}')
+    except Exception as e:
+        logger.error(f"Failed to read today's monitor records for delta: {e}")
+        records_today = []
+
+    base_5, base_15 = _pick_baselines(records_today, now)
+
     # === 持久化 Monitor 记录（含模型明细）===
     if region_results:
         try:
-            utc_date = now.strftime('%Y-%m-%d')
             utc_time = now.strftime('%H:%M')
             expire_at = int((now + timedelta(days=2)).timestamp())
 
@@ -285,16 +298,6 @@ def handler(event, context):
         return {'statusCode': 200, 'alerts': [], 'cost_thresholds_configured': False}
 
     # === Delta 告警判定 ===
-    # 读当天已有记录，选基线，算增量费用
-    utc_date = now.strftime('%Y-%m-%d')
-    try:
-        records_today = query_by_pk(f'MONITOR#{utc_date}')
-    except Exception as e:
-        logger.error(f"Failed to read today's monitor records for delta: {e}")
-        records_today = []
-
-    base_5, base_15 = _pick_baselines(records_today, now)
-
     cost_eval = {
         '5min':  _delta(cost['daily'], base_5),
         '15min': _delta(cost['daily'], base_15),

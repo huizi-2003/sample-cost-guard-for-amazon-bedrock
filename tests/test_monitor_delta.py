@@ -475,3 +475,25 @@ class TestHandlerDeltaAlert:
         sonnet_pos = msg.find('claude-sonnet-4')
         opus_pos = msg.find('claude-opus-4')
         assert sonnet_pos < opus_pos, f"Sonnet should be listed before opus in incremental top. msg={msg}"
+
+    def test_baseline_read_happens_before_record_write(self, mock_env):
+        """回归：基线必须在写入本轮记录之前读取。
+
+        若先写后读，查回的最新记录是本轮自己（complete=True、cost_daily=当前值），
+        基线==当前值 → delta 恒 0，5min 告警永久失效。
+        """
+        order = []
+        mock_env['query_by_pk'].side_effect = lambda pk: order.append('read') or []
+        mock_env['put_item'].side_effect = lambda *a, **kw: order.append('write')
+        models = {'claude-sonnet-4': {'input': 100, 'output': 50, 'cache_read': 0, 'cache_write': 0}}
+        mock_env['fetch_region'].return_value = {
+            'region': 'us-east-1', '5min': 150, '15min': 150, 'daily': 150,
+            'models': {'5min': models, '15min': models, 'daily': models},
+        }
+
+        from monitor.handler import handler
+        handler({}, None)
+
+        assert 'read' in order and 'write' in order
+        assert order.index('read') < order.index('write'), \
+            "baseline read must happen BEFORE this run's record is persisted"
