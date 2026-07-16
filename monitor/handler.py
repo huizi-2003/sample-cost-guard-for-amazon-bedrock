@@ -40,8 +40,11 @@ def fetch_region(region, start_daily, start_15min, start_5min, end, bucket_end=N
     """单次拉取（含 NextToken 分页）算出该 region 的 5min/15min/daily 总量，
     以及各窗口的每模型每类型明细。取代旧的 fetch_region + fetch_detail 两遍扫描。
 
-    - 查询窗口固定为 start_daily→end：它是旧明细查询窗口的超集，因此按 ts>=阈值
-      过滤即可精确复现旧的 daily/15min/5min 总量及 5min 每模型明细，无数值漂移。
+    - 查询窗口 = 日历日窗口与滚动窗口的并集：query_start = min(start_daily, start_15min)。
+      午夜后（00:00~00:15）滚动窗口伸到前一天，query_start 会早于 start_daily，
+      确保 5min/15min 桶不因跨日而丢失；白天 start_daily 更早，行为不变。
+    - 每个统计窗口自己做显式 ts 过滤：daily 只累加 ts >= start_daily 的数据点，
+      避免查询窗口扩大后把前一天尾部数据错误计入当天。
     - 5min/15min 窗口额外加上界 bucket_end（最近已关闭桶的右边界），确保每轮只统计
       已完整关闭的桶，避免相邻两轮重复计同一个未关闭桶。daily 不受限（累计到当前）。
     - Period=300 下 CloudWatch 只返回有数据的桶，缺失桶不返回；token 计数恒非负，
@@ -55,9 +58,12 @@ def fetch_region(region, start_daily, start_15min, start_5min, end, bucket_end=N
     total = {'5min': 0, '15min': 0, 'daily': 0}
     models = {'5min': {}, '15min': {}, 'daily': {}}
 
+    # 滚动窗口在 00:00~00:15 会伸到前一天，查询起点取两种口径的并集
+    query_start = min(start_daily, start_15min)
+
     next_token = None
     while True:
-        kwargs = {'MetricDataQueries': QUERIES, 'StartTime': start_daily, 'EndTime': end}
+        kwargs = {'MetricDataQueries': QUERIES, 'StartTime': query_start, 'EndTime': end}
         if next_token:
             kwargs['NextToken'] = next_token
         resp = cw.get_metric_data(**kwargs)
@@ -71,8 +77,10 @@ def fetch_region(region, start_daily, start_15min, start_5min, end, bucket_end=N
             for ts, val in zip(r['Timestamps'], r['Values']):
                 if val <= 0:
                     continue
-                total['daily'] += val
-                _add_model(models['daily'], model_name, token_type, val)
+                # 查询窗口已比日历日宽（午夜场景），每个统计窗口显式过滤
+                if ts >= start_daily:
+                    total['daily'] += val
+                    _add_model(models['daily'], model_name, token_type, val)
                 if ts >= start_15min and (bucket_end is None or ts < bucket_end):
                     total['15min'] += val
                     _add_model(models['15min'], model_name, token_type, val)
@@ -169,6 +177,8 @@ def handler(event, context):
     #   - 旧问题：start 不对齐导致桶被漏（系统性低估 ~50%）
     #   - 新问题：纳入当前未关闭桶导致相邻两轮重复计同一桶（系统性高估 ~50%）
     # bucket_end = floor(now) 即最近一个已关闭桶的右边界，start = bucket_end - window。
+    # 午夜场景（00:00~00:15）：start_15min 会落到前一天（如 23:45），fetch_region 内
+    # query_start = min(start_daily, start_15min) 自动扩展查询窗口，确保滚动桶不丢失。
     def _floor_to_period(ts, period=300):
         epoch = int(ts.timestamp())
         floored = epoch - (epoch % period)

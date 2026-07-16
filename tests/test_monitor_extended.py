@@ -426,3 +426,101 @@ class TestFetchRegionSinglePass:
         assert result['5min'] == 40
         assert result['models']['5min']['claude-sonnet-4']['input'] == 10
         assert result['models']['5min']['claude-opus-4']['input'] == 30
+
+
+# === fetch_region midnight bucket fix tests ===
+
+
+class TestFetchRegionMidnight:
+    """fetch_region 午夜场景：query_start 扩展 + daily 过滤。"""
+
+    def _run(self, pages, start_daily, start_15min, start_5min, end, bucket_end=None):
+        """可自定义窗口参数的 fetch_region 驱动。"""
+        mock_cw = MagicMock()
+        responses = []
+        for i, results in enumerate(pages):
+            resp = {'MetricDataResults': results}
+            if i < len(pages) - 1:
+                resp['NextToken'] = f'tok{i}'
+            responses.append(resp)
+        mock_cw.get_metric_data.side_effect = responses
+
+        with patch('monitor.handler.boto3.session.Session') as mock_session_cls:
+            mock_session_cls.return_value.client.return_value = mock_cw
+            from monitor.handler import fetch_region
+            result = fetch_region('us-east-1', start_daily, start_15min, start_5min, end, bucket_end)
+        return result, mock_cw
+
+    def test_midnight_query_start_extends_to_previous_day(self):
+        """00:02 运行：start_15min=昨日 23:47 < start_daily=今日 00:00，
+        断言 StartTime == start_15min（查询窗口扩展到前一天）。"""
+        start_daily = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)
+        start_15min = datetime(2026, 7, 15, 23, 45, 0, tzinfo=timezone.utc)
+        start_5min = datetime(2026, 7, 15, 23, 55, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 7, 16, 0, 2, 0, tzinfo=timezone.utc)
+        bucket_end = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)
+
+        series = _bedrock_series('claude-sonnet-4', 'InputTokenCount',
+                                 [datetime(2026, 7, 15, 23, 55, 0, tzinfo=timezone.utc)], [100])
+        _, mock_cw = self._run([[series]], start_daily, start_15min, start_5min, end, bucket_end)
+
+        call_kwargs = mock_cw.get_metric_data.call_args[1]
+        assert call_kwargs['StartTime'] == start_15min  # 扩展到前一天
+
+    def test_midnight_yesterday_bucket_in_5min_not_daily(self):
+        """午夜场景：ts=昨日 23:55 的数据点应计入 5min 和 15min，不计入 daily。"""
+        start_daily = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)
+        start_15min = datetime(2026, 7, 15, 23, 45, 0, tzinfo=timezone.utc)
+        start_5min = datetime(2026, 7, 15, 23, 55, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 7, 16, 0, 2, 0, tzinfo=timezone.utc)
+        bucket_end = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)
+
+        ts_yesterday = datetime(2026, 7, 15, 23, 55, 0, tzinfo=timezone.utc)
+        series = _bedrock_series('claude-sonnet-4', 'InputTokenCount',
+                                 [ts_yesterday], [200])
+        result, _ = self._run([[series]], start_daily, start_15min, start_5min, end, bucket_end)
+
+        # ts < start_daily → 不计入 daily
+        assert result['daily'] == 0
+        assert 'claude-sonnet-4' not in result['models']['daily']
+        # ts >= start_15min 且 ts < bucket_end → 计入 15min
+        assert result['15min'] == 200
+        assert result['models']['15min']['claude-sonnet-4']['input'] == 200
+        # ts >= start_5min 且 ts < bucket_end → 计入 5min
+        assert result['5min'] == 200
+        assert result['models']['5min']['claude-sonnet-4']['input'] == 200
+
+    def test_midnight_mixed_yesterday_and_today(self):
+        """午夜场景：前一天和今天的数据点混合，验证正确分配。"""
+        start_daily = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)
+        start_15min = datetime(2026, 7, 15, 23, 45, 0, tzinfo=timezone.utc)
+        start_5min = datetime(2026, 7, 15, 23, 55, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 7, 16, 0, 2, 0, tzinfo=timezone.utc)
+        bucket_end = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)
+
+        ts_yesterday = datetime(2026, 7, 15, 23, 55, 0, tzinfo=timezone.utc)
+        ts_today = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)  # == bucket_end → excluded from 5min/15min
+        series = _bedrock_series('claude-sonnet-4', 'InputTokenCount',
+                                 [ts_yesterday, ts_today], [100, 50])
+        result, _ = self._run([[series]], start_daily, start_15min, start_5min, end, bucket_end)
+
+        # daily 只含今天的: ts_today >= start_daily
+        assert result['daily'] == 50
+        # 15min: ts_yesterday >= start_15min 且 < bucket_end → 计入; ts_today >= bucket_end → 排除
+        assert result['15min'] == 100
+        # 5min: ts_yesterday >= start_5min 且 < bucket_end → 计入; ts_today >= bucket_end → 排除
+        assert result['5min'] == 100
+
+    def test_midday_query_start_unchanged(self):
+        """中午运行：start_daily < start_15min，query_start == start_daily（回归保护）。"""
+        start_daily = datetime(2026, 7, 16, 0, 0, 0, tzinfo=timezone.utc)
+        start_15min = datetime(2026, 7, 16, 11, 57, 0, tzinfo=timezone.utc)
+        start_5min = datetime(2026, 7, 16, 12, 7, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 7, 16, 12, 12, 0, tzinfo=timezone.utc)
+
+        series = _bedrock_series('claude-sonnet-4', 'InputTokenCount',
+                                 [datetime(2026, 7, 16, 3, 0, 0, tzinfo=timezone.utc)], [10])
+        _, mock_cw = self._run([[series]], start_daily, start_15min, start_5min, end)
+
+        call_kwargs = mock_cw.get_metric_data.call_args[1]
+        assert call_kwargs['StartTime'] == start_daily  # 白天行为不变
