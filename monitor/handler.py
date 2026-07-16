@@ -36,13 +36,14 @@ def _add_model(bucket, model_name, token_type, val):
     bucket[model_name][token_type] += val
 
 
-def fetch_region(region, start_daily, start_15min, start_5min, end):
+def fetch_region(region, start_daily, start_15min, start_5min, end, bucket_end=None):
     """单次拉取（含 NextToken 分页）算出该 region 的 5min/15min/daily 总量，
     以及各窗口的每模型每类型明细。取代旧的 fetch_region + fetch_detail 两遍扫描。
 
-    - 查询窗口固定为 start_daily→now：它是旧明细查询窗口的超集，因此按 ts>=阈值
-      过滤即可精确复现旧的 daily/15min/5min 总量及 5min 每模型明细，无数值漂移
-      （旧 fetch_detail 里向前对齐一个 Period 的 hack 因此不再需要）。
+    - 查询窗口固定为 start_daily→end：它是旧明细查询窗口的超集，因此按 ts>=阈值
+      过滤即可精确复现旧的 daily/15min/5min 总量及 5min 每模型明细，无数值漂移。
+    - 5min/15min 窗口额外加上界 bucket_end（最近已关闭桶的右边界），确保每轮只统计
+      已完整关闭的桶，避免相邻两轮重复计同一个未关闭桶。daily 不受限（累计到当前）。
     - Period=300 下 CloudWatch 只返回有数据的桶，缺失桶不返回；token 计数恒非负，
       跳过 0 值不影响总量，且避免为 0 创建空模型项（与旧 fetch_detail 行为一致）。
     - NextToken 循环：改读原始 per-model SEARCH 后单页可能超过 10.08 万数据点上限
@@ -72,10 +73,10 @@ def fetch_region(region, start_daily, start_15min, start_5min, end):
                     continue
                 total['daily'] += val
                 _add_model(models['daily'], model_name, token_type, val)
-                if ts >= start_15min:
+                if ts >= start_15min and (bucket_end is None or ts < bucket_end):
                     total['15min'] += val
                     _add_model(models['15min'], model_name, token_type, val)
-                if ts >= start_5min:
+                if ts >= start_5min and (bucket_end is None or ts < bucket_end):
                     total['5min'] += val
                     _add_model(models['5min'], model_name, token_type, val)
         next_token = resp.get('NextToken')
@@ -123,15 +124,18 @@ def handler(event, context):
     now = datetime.now(timezone.utc)
     start_daily = now.replace(hour=0, minute=0, second=0, microsecond=0)
     # CloudWatch 以 Period=300 从 UTC 零点对齐桶边界（00:00, 00:05, 00:10, ...）。
-    # 若 start 不对齐到桶边界，会系统性漏掉跨越窗口起点的那个桶（该桶 timestamp < start），
-    # 导致每次运行只看到 ~2.5min 数据（约 50% 丢失）。向下取整到 300s 边界消除此问题。
+    # 每轮只统计"已完整关闭"的桶（ts < bucket_end），避免：
+    #   - 旧问题：start 不对齐导致桶被漏（系统性低估 ~50%）
+    #   - 新问题：纳入当前未关闭桶导致相邻两轮重复计同一桶（系统性高估 ~50%）
+    # bucket_end = floor(now) 即最近一个已关闭桶的右边界，start = bucket_end - window。
     def _floor_to_period(ts, period=300):
         epoch = int(ts.timestamp())
         floored = epoch - (epoch % period)
         return datetime.fromtimestamp(floored, tz=timezone.utc)
 
-    start_5min = _floor_to_period(now - timedelta(minutes=5))
-    start_15min = _floor_to_period(now - timedelta(minutes=15))
+    bucket_end = _floor_to_period(now)
+    start_5min = bucket_end - timedelta(seconds=300)
+    start_15min = bucket_end - timedelta(seconds=900)
 
     webhooks = get_webhook_config()
 
@@ -150,7 +154,7 @@ def handler(event, context):
     region_results = []
     failed_regions = []
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(fetch_region, r, start_daily, start_15min, start_5min, now): r for r in regions}
+        futures = {executor.submit(fetch_region, r, start_daily, start_15min, start_5min, now, bucket_end): r for r in regions}
         for future in as_completed(futures):
             region = futures[future]
             try:
