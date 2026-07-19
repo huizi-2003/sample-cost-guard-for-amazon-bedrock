@@ -14,6 +14,9 @@ dist/
 venv/
 env/
 
+# ===== Build artifacts (generated at deploy time) =====
+common/build_info.py
+
 # ===== Testing =====
 .pytest_cache/
 .hypothesis/

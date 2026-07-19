@@ -847,11 +847,20 @@ async def backfill(request: Request):
 
 # ===== 版本信息 =====
 
+# 缓存有效期（秒）
+_VERSION_CACHE_TTL = 3600  # 1 小时
+
 
 @app.get('/api/version')
 async def get_version_info():
-    """返回版本信息：当前版本、堆栈名称、IP 白名单、最新版本。"""
+    """返回版本信息：当前版本 + commit SHA、堆栈名称、IP 白名单、远端最新 SHA。"""
     from common.version import VERSION
+
+    # 读取构建时注入的 commit SHA（容错：本地开发/旧部署可能没有这个文件）
+    try:
+        from common.build_info import COMMIT_SHA
+    except ImportError:
+        COMMIT_SHA = ''
 
     # 环境变量优先，fallback 保证本地开发/测试可用
     stack_name = os.environ.get('STACK_NAME') or 'bedrock-cost-guard'
@@ -861,7 +870,8 @@ async def get_version_info():
 
     result = {
         'current_version': VERSION,
-        'latest_version': None,
+        'commit_sha': COMMIT_SHA,
+        'latest_sha': None,
         'has_update': None,
         'stack_name': stack_name,
         'allowed_cidrs': [],
@@ -886,31 +896,62 @@ async def get_version_info():
     except Exception as e:
         logger.warning(f"Failed to describe CloudFormation stack: {e}")
 
-    # 调用 GitHub 读取主仓库的 common/version.py 获取最新版本号
-    try:
-        url = f'https://raw.githubusercontent.com/{upstream_owner}/{upstream_repo}/{upstream_branch}/common/version.py'
-        req = urllib.request.Request(url, headers={'User-Agent': 'bedrock-cost-guard'})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            content = resp.read().decode()
-            match = re.search(r'VERSION\s*=\s*["\']([^"\']+)["\']', content)
-            if match:
-                result['latest_version'] = match.group(1)
-                result['has_update'] = _compare_versions(VERSION, match.group(1))
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-        logger.warning(f"Failed to fetch latest version from GitHub: {e}")
+    # 获取远端最新 commit SHA（带 DDB 缓存，1h TTL）
+    latest_sha = _get_latest_sha_cached(upstream_owner, upstream_repo, upstream_branch)
+    result['latest_sha'] = latest_sha
+
+    # 判定是否有更新
+    if COMMIT_SHA and latest_sha:
+        result['has_update'] = (latest_sha != COMMIT_SHA)
+    # 任一边缺失 → has_update 保持 None，前端显示"无法检查更新"
 
     return result
 
 
-def _compare_versions(current: str, latest: str) -> bool:
-    """比较版本号，返回 True 表示有更新可用。支持语义化版本（x.y.z）。
-    非语义版本或解析失败时保守返回 False（拿不准就不提示更新）。"""
+def _get_latest_sha_cached(owner: str, repo: str, branch: str):
+    """获取远端最新 commit SHA，带 DDB 缓存（1h TTL）。
+
+    缓存策略：
+    - 1h 内直接返回缓存
+    - 过期后尝试拉 GitHub；成功则更新缓存
+    - GitHub 失败（含 403 限流）时：有过期缓存就用（stale），无缓存返回 None
+    """
+    now = datetime.now(timezone.utc)
+    now_iso = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # 读缓存
+    cached = get_item('CONFIG', 'version_check')
+    if cached:
+        checked_at = cached.get('checked_at', '')
+        cached_sha = cached.get('latest_sha', '')
+        if checked_at and cached_sha:
+            try:
+                checked_time = datetime.fromisoformat(checked_at.replace('Z', '+00:00'))
+                age = (now - checked_time).total_seconds()
+                if age < _VERSION_CACHE_TTL:
+                    return cached_sha
+            except (ValueError, TypeError):
+                pass
+
+    # 缓存过期或不存在，尝试拉 GitHub
     try:
-        def parse(v):
-            return tuple(int(x) for x in v.split('.'))
-        return parse(latest) > parse(current)
-    except (ValueError, AttributeError):
-        return False
+        url = f'https://api.github.com/repos/{owner}/{repo}/commits/{branch}'
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'bedrock-cost-guard',
+            'Accept': 'application/vnd.github.sha',
+        })
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            latest_sha = resp.read().decode().strip()
+        if latest_sha:
+            put_item('CONFIG', 'version_check', latest_sha=latest_sha, checked_at=now_iso)
+            return latest_sha
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        logger.warning(f"Failed to fetch latest commit SHA from GitHub: {e}")
+
+    # GitHub 失败，回退 stale 缓存
+    if cached and cached.get('latest_sha'):
+        return cached['latest_sha']
+    return None
 
 
 # ===== Lambda handler (API Gateway) =====
