@@ -1145,7 +1145,7 @@ async function loadVersionInfo() {
     document.getElementById('ver-current').textContent = currentText;
 
     // 最新提交：远端 SHA 前 7 位
-    document.getElementById('ver-latest-sha').textContent = data.latest_sha ? data.latest_sha.substring(0, 7) : '-';
+    document.getElementById('ver-latest-sha').textContent = data.latest_sha ? data.latest_sha.substring(0, 7) + (data.latest_sha_stale ? ' (缓存)' : '') : '-';
     document.getElementById('ver-last-updated').textContent = data.last_updated ? new Date(data.last_updated).toLocaleString('zh-CN') : '-';
 
     // 更新状态

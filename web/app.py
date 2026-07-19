@@ -897,8 +897,9 @@ async def get_version_info():
         logger.warning(f"Failed to describe CloudFormation stack: {e}")
 
     # 获取远端最新 commit SHA（带 DDB 缓存，1h TTL）
-    latest_sha = _get_latest_sha_cached(upstream_owner, upstream_repo, upstream_branch)
+    latest_sha, is_stale = _get_latest_sha_cached(upstream_owner, upstream_repo, upstream_branch)
     result['latest_sha'] = latest_sha
+    result['latest_sha_stale'] = is_stale
 
     # 判定是否有更新
     if COMMIT_SHA and latest_sha:
@@ -910,6 +911,11 @@ async def get_version_info():
 
 def _get_latest_sha_cached(owner: str, repo: str, branch: str):
     """获取远端最新 commit SHA，带 DDB 缓存（1h TTL）。
+
+    返回 (sha, is_stale):
+    - (sha, False): 新鲜缓存或刚从 GitHub 拉取
+    - (sha, True): GitHub 失败，回退过期缓存
+    - (None, False): 无缓存且 GitHub 不可达
 
     缓存策略：
     - 1h 内直接返回缓存
@@ -929,7 +935,7 @@ def _get_latest_sha_cached(owner: str, repo: str, branch: str):
                 checked_time = datetime.fromisoformat(checked_at.replace('Z', '+00:00'))
                 age = (now - checked_time).total_seconds()
                 if age < _VERSION_CACHE_TTL:
-                    return cached_sha
+                    return cached_sha, False
             except (ValueError, TypeError):
                 pass
 
@@ -943,15 +949,16 @@ def _get_latest_sha_cached(owner: str, repo: str, branch: str):
         with urllib.request.urlopen(req, timeout=5) as resp:
             latest_sha = resp.read().decode().strip()
         if latest_sha:
-            put_item('CONFIG', 'version_check', latest_sha=latest_sha, checked_at=now_iso)
-            return latest_sha
+            put_item('CONFIG', 'version_check', latest_sha=latest_sha, checked_at=now_iso,
+                     expire_at=int(now.timestamp()) + 7 * 86400)
+            return latest_sha, False
     except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
         logger.warning(f"Failed to fetch latest commit SHA from GitHub: {e}")
 
     # GitHub 失败，回退 stale 缓存
     if cached and cached.get('latest_sha'):
-        return cached['latest_sha']
-    return None
+        return cached['latest_sha'], True
+    return None, False
 
 
 # ===== Lambda handler (API Gateway) =====

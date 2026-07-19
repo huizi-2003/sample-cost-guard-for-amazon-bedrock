@@ -182,6 +182,7 @@ class TestVersionCache:
 
         data = resp.json()
         assert data['latest_sha'] == 'cached_sha_aaa'
+        assert data['latest_sha_stale'] is False
         assert data['has_update'] is False
         # urlopen 不应被调用（缓存命中）
         mock_urlopen.assert_not_called()
@@ -216,6 +217,7 @@ class TestVersionCache:
 
         data = resp.json()
         assert data['latest_sha'] == 'fresh_sha_from_github'
+        assert data['latest_sha_stale'] is False
         mock_urlopen.assert_called_once()
         # 缓存应被更新
         mock_put.assert_called()
@@ -249,6 +251,7 @@ class TestVersionCache:
         data = resp.json()
         # 应回退到 stale 缓存
         assert data['latest_sha'] == 'stale_sha_bbb'
+        assert data['latest_sha_stale'] is True
         assert data['has_update'] is True  # local_sha != stale_sha_bbb
 
 

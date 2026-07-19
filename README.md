@@ -207,7 +207,8 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
   - 每 5 分钟自动刷新
 - **配置管理**：阈值、监控 Region 列表、Webhook 设置
 - **版本管理**：
-  - 当前部署版本 vs GitHub 主仓库最新版本，有更新时提示
+  - 基于 commit SHA 比对检测更新（当前部署 SHA vs GitHub 仓库分支最新 SHA，构建时自动固化，无需手动维护版本号）
+  - 检查结果缓存 1 小时（DynamoDB），GitHub 不可达时回退过期缓存
   - 堆栈名称、最后部署时间、IP 白名单（读取 CloudFormation 栈参数）
   - 内置升级命令说明
 - **⚠️ 安全提示**：本示例未实现用户认证，仅依赖 API Gateway Resource Policy 的 IP 白名单控制访问。如用于生产环境，请自行添加认证机制（如 Cognito、IAM Auth 等），避免管理界面暴露在公网

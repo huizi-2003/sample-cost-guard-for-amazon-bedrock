@@ -87,7 +87,7 @@ Resources:
       MemorySize: 256
       Code:
         ZipFile: |
-          import urllib.request, boto3, zipfile, io, subprocess, tempfile, os, json
+          import urllib.request, boto3, zipfile, io, subprocess, tempfile, os, json, datetime
           KEEP = ('common/', 'monitor/', 'reconciler/', 'web/')
           def _send(event, context, status, data):
               body = json.dumps({
@@ -130,7 +130,7 @@ Resources:
 
                   # GitHub archive zip 的 comment 字段就是 commit SHA
                   sha = (src.comment or b'').decode('utf-8', 'ignore').strip()
-                  build_info = 'COMMIT_SHA = "%s"\nBUILD_TIME = "%s"\n' % (sha, __import__('datetime').datetime.utcnow().isoformat() + 'Z')
+                  build_info = 'COMMIT_SHA = "%s"\nBUILD_TIME = "%s"\n' % (sha, datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
 
                   # Build lambda.zip (monitor + reconciler + common)
                   buf = io.BytesIO()
