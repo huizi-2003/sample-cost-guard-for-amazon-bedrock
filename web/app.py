@@ -5,6 +5,8 @@ import time
 import json
 import math
 import logging
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -841,6 +843,77 @@ async def backfill(request: Request):
         'triggered': len(triggered),
         'message': f'已异步触发 {len(triggered)} 天对账，结果将陆续写入数据库',
     }
+
+
+# ===== 版本信息 =====
+
+# 主仓库坐标（硬编码，用于检查最新版本）
+_UPSTREAM_OWNER = 'huizi-2003'
+_UPSTREAM_REPO = 'sample-cost-guard-for-amazon-bedrock'
+_UPSTREAM_BRANCH = 'main'
+
+
+@app.get('/api/version')
+async def get_version_info():
+    """返回版本信息：当前版本、堆栈名称、IP 白名单、最新版本。"""
+    from common.version import VERSION
+
+    # 1. 从 Lambda 函数名推导栈名
+    function_name = os.environ.get('AWS_LAMBDA_FUNCTION_NAME', '')
+    stack_name = function_name.rsplit('-web', 1)[0] if function_name.endswith('-web') else function_name or 'bedrock-cost-guard'
+
+    result = {
+        'current_version': VERSION,
+        'latest_version': None,
+        'has_update': None,
+        'stack_name': stack_name,
+        'allowed_cidrs': [],
+        'last_updated': None,
+    }
+
+    # 2. 查询 CloudFormation 栈信息（堆栈名称、白名单、最后更新时间）
+    try:
+        cfn = boto3.client('cloudformation')
+        resp = cfn.describe_stacks(StackName=stack_name)
+        stacks = resp.get('Stacks', [])
+        if stacks:
+            stack = stacks[0]
+            last_updated = stack.get('LastUpdatedTime') or stack.get('CreationTime')
+            if last_updated:
+                result['last_updated'] = last_updated.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+            params = {p['ParameterKey']: p['ParameterValue'] for p in stack.get('Parameters', [])}
+            cidrs_str = params.get('AllowedCidrs', '')
+            if cidrs_str:
+                result['allowed_cidrs'] = [c.strip() for c in cidrs_str.split(',') if c.strip()]
+    except Exception as e:
+        logger.warning(f"Failed to describe CloudFormation stack: {e}")
+
+    # 3. 调用 GitHub API 读取主仓库的 common/version.py 获取最新版本号
+    try:
+        url = f'https://raw.githubusercontent.com/{_UPSTREAM_OWNER}/{_UPSTREAM_REPO}/{_UPSTREAM_BRANCH}/common/version.py'
+        req = urllib.request.Request(url, headers={'User-Agent': 'bedrock-cost-guard'})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            content = resp.read().decode()
+            # 解析 VERSION = "x.y.z"
+            match = re.search(r'VERSION\s*=\s*["\']([^"\']+)["\']', content)
+            if match:
+                result['latest_version'] = match.group(1)
+                result['has_update'] = _compare_versions(VERSION, match.group(1))
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        logger.warning(f"Failed to fetch latest version from GitHub: {e}")
+
+    return result
+
+
+def _compare_versions(current: str, latest: str) -> bool:
+    """比较版本号，返回 True 表示有更新可用。支持语义化版本（x.y.z）。"""
+    try:
+        def parse(v):
+            return tuple(int(x) for x in v.split('.'))
+        return parse(latest) > parse(current)
+    except (ValueError, AttributeError):
+        return current != latest
 
 
 # ===== Lambda handler (API Gateway) =====

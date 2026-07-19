@@ -91,6 +91,7 @@ tr:hover { background: #faf7f4; }
       <div class="tab" data-panel="monitor">实时监控</div>
       <div class="tab" data-panel="config">配置管理</div>
       <div class="tab" data-panel="iam-scan">权限扫描</div>
+      <div class="tab" data-panel="version">版本管理</div>
     </nav>
   </aside>
   <main class="main">
@@ -277,6 +278,38 @@ tr:hover { background: #faf7f4; }
   </div>
 
 </div>
+
+<!-- Tab 6: 版本管理 -->
+<div id="version" class="panel">
+  <h3 style="margin-bottom:16px">版本管理</h3>
+  <div id="version-loading" style="text-align:center;padding:40px;color:#6b6560;">加载中...</div>
+  <div id="version-error" style="display:none;text-align:center;padding:40px;color:#d32f2f;"></div>
+  <div id="version-content" style="display:none;">
+    <!-- Summary cards -->
+    <div class="summary" id="version-summary">
+      <div class="summary-card"><div class="value" id="ver-stack-name">-</div><div class="label">堆栈名称</div></div>
+      <div class="summary-card"><div class="value" id="ver-current">-</div><div class="label">当前版本</div></div>
+      <div class="summary-card"><div class="value" id="ver-latest-version">-</div><div class="label">最新版本</div></div>
+      <div class="summary-card"><div class="value" id="ver-last-updated">-</div><div class="label">最后部署时间</div></div>
+    </div>
+
+    <!-- 更新状态 -->
+    <div id="ver-update-status" style="margin-bottom:20px"></div>
+
+    <!-- IP 白名单 -->
+    <div style="background:#fff;border:1px solid #e8e0d8;border-radius:12px;padding:24px;margin-bottom:20px">
+      <h3 style="margin:0 0 12px">IP 白名单</h3>
+      <p style="color:#6b6560;font-size:13px;margin:0 0 12px">API Gateway Resource Policy 允许访问的 IP 地址</p>
+      <div id="ver-cidrs"></div>
+    </div>
+
+    <!-- 升级说明 -->
+    <div style="background:#faf7f4;border:1px solid #e8e0d8;border-radius:10px;padding:16px;">
+      <p style="font-size:13px;color:#6b6560;margin:0 0 8px"><strong>如何升级：</strong></p>
+      <code style="display:block;font-size:12px;background:#fff;padding:12px;border-radius:6px;border:1px solid #e8e0d8;overflow-x:auto;white-space:pre-wrap;">aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard --parameter-overrides Version=$(date +%s) AllowedCidrs=你的IP/32 --capabilities CAPABILITY_IAM</code>
+    </div>
+  </div>
+</div>
     </div>
   </main>
 </div>
@@ -313,6 +346,9 @@ document.querySelectorAll('.tab').forEach(tab => {
     }
     if (tab.dataset.panel === 'iam-scan') {
       loadIamScan();
+    }
+    if (tab.dataset.panel === 'version') {
+      loadVersionInfo();
     }
   };
 });
@@ -1082,6 +1118,53 @@ async function triggerIamScan() {
   }
 }
 
+// ===== Version Info =====
+async function loadVersionInfo() {
+  const loadingEl = document.getElementById('version-loading');
+  const errorEl = document.getElementById('version-error');
+  const contentEl = document.getElementById('version-content');
+
+  loadingEl.style.display = '';
+  errorEl.style.display = 'none';
+  contentEl.style.display = 'none';
+
+  try {
+    const resp = await fetch(`${API}/api/version`);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+
+    loadingEl.style.display = 'none';
+    contentEl.style.display = '';
+
+    // Summary cards
+    document.getElementById('ver-stack-name').textContent = data.stack_name || '-';
+    document.getElementById('ver-current').textContent = data.current_version ? 'v' + data.current_version : '-';
+    document.getElementById('ver-latest-version').textContent = data.latest_version ? 'v' + data.latest_version : '-';
+    document.getElementById('ver-last-updated').textContent = data.last_updated ? new Date(data.last_updated).toLocaleString('zh-CN') : '-';
+
+    // 更新状态
+    const statusEl = document.getElementById('ver-update-status');
+    if (data.has_update === true) {
+      statusEl.innerHTML = '<div style="background:#fff3e0;border:1px solid #f5c27a;border-radius:10px;padding:14px 20px;display:flex;align-items:center;gap:12px"><span style="font-size:20px">🆕</span><div><span style="font-weight:600;color:#c07830">有新版本可用</span><span style="color:#6b6560;font-size:13px;margin-left:8px">v' + data.current_version + ' → v' + data.latest_version + '</span></div></div>';
+    } else if (data.has_update === false) {
+      statusEl.innerHTML = '<div style="background:#e8f5e9;border:1px solid #a5d6a7;border-radius:10px;padding:14px 20px;display:flex;align-items:center;gap:12px"><span style="font-size:20px">✅</span><span style="font-weight:600;color:#2d8659">已是最新版本</span></div>';
+    } else {
+      statusEl.innerHTML = '<div style="background:#f5f5f5;border:1px solid #e0e0e0;border-radius:10px;padding:14px 20px;display:flex;align-items:center;gap:12px"><span style="font-size:20px">⚠️</span><span style="color:#6b6560">无法检查更新（GitHub 请求失败）</span></div>';
+    }
+
+    // IP 白名单
+    const cidrs = data.allowed_cidrs || [];
+    document.getElementById('ver-cidrs').innerHTML = cidrs.length > 0
+      ? cidrs.map(c => `<span style="display:inline-block;background:#f0ebe4;padding:4px 10px;border-radius:6px;margin:4px;font-family:monospace;font-size:13px">${c}</span>`).join('')
+      : '<span style="color:#6b6560;font-size:13px">未配置（默认 127.0.0.1/32 = 全部关闭）</span>';
+
+  } catch (e) {
+    loadingEl.style.display = 'none';
+    errorEl.style.display = '';
+    errorEl.textContent = '加载版本信息失败：' + e.message;
+  }
+}
+
 // ===== Init =====
 loadOverview();
 loadDates();
@@ -1091,6 +1174,7 @@ loadWebhook();
 loadMonitorEnabled();
 loadNotifyPolicy();
 loadIamScan();
+loadVersionInfo();
 </script>
 </body>
 </html>
