@@ -847,20 +847,17 @@ async def backfill(request: Request):
 
 # ===== 版本信息 =====
 
-# 主仓库坐标（硬编码，用于检查最新版本）
-_UPSTREAM_OWNER = 'huizi-2003'
-_UPSTREAM_REPO = 'sample-cost-guard-for-amazon-bedrock'
-_UPSTREAM_BRANCH = 'main'
-
 
 @app.get('/api/version')
 async def get_version_info():
     """返回版本信息：当前版本、堆栈名称、IP 白名单、最新版本。"""
     from common.version import VERSION
 
-    # 1. 从 Lambda 函数名推导栈名
-    function_name = os.environ.get('AWS_LAMBDA_FUNCTION_NAME', '')
-    stack_name = function_name.rsplit('-web', 1)[0] if function_name.endswith('-web') else function_name or 'bedrock-cost-guard'
+    # 环境变量优先，fallback 保证本地开发/测试可用
+    stack_name = os.environ.get('STACK_NAME') or 'bedrock-cost-guard'
+    upstream_owner = os.environ.get('GITHUB_OWNER', 'huizi-2003')
+    upstream_repo = os.environ.get('GITHUB_REPO', 'sample-cost-guard-for-amazon-bedrock')
+    upstream_branch = os.environ.get('GITHUB_BRANCH', 'main')
 
     result = {
         'current_version': VERSION,
@@ -871,7 +868,7 @@ async def get_version_info():
         'last_updated': None,
     }
 
-    # 2. 查询 CloudFormation 栈信息（堆栈名称、白名单、最后更新时间）
+    # 查询 CloudFormation 栈信息（白名单、最后更新时间）
     try:
         cfn = boto3.client('cloudformation')
         resp = cfn.describe_stacks(StackName=stack_name)
@@ -889,13 +886,12 @@ async def get_version_info():
     except Exception as e:
         logger.warning(f"Failed to describe CloudFormation stack: {e}")
 
-    # 3. 调用 GitHub API 读取主仓库的 common/version.py 获取最新版本号
+    # 调用 GitHub 读取主仓库的 common/version.py 获取最新版本号
     try:
-        url = f'https://raw.githubusercontent.com/{_UPSTREAM_OWNER}/{_UPSTREAM_REPO}/{_UPSTREAM_BRANCH}/common/version.py'
+        url = f'https://raw.githubusercontent.com/{upstream_owner}/{upstream_repo}/{upstream_branch}/common/version.py'
         req = urllib.request.Request(url, headers={'User-Agent': 'bedrock-cost-guard'})
         with urllib.request.urlopen(req, timeout=5) as resp:
             content = resp.read().decode()
-            # 解析 VERSION = "x.y.z"
             match = re.search(r'VERSION\s*=\s*["\']([^"\']+)["\']', content)
             if match:
                 result['latest_version'] = match.group(1)
@@ -907,13 +903,14 @@ async def get_version_info():
 
 
 def _compare_versions(current: str, latest: str) -> bool:
-    """比较版本号，返回 True 表示有更新可用。支持语义化版本（x.y.z）。"""
+    """比较版本号，返回 True 表示有更新可用。支持语义化版本（x.y.z）。
+    非语义版本或解析失败时保守返回 False（拿不准就不提示更新）。"""
     try:
         def parse(v):
             return tuple(int(x) for x in v.split('.'))
         return parse(latest) > parse(current)
     except (ValueError, AttributeError):
-        return current != latest
+        return False
 
 
 # ===== Lambda handler (API Gateway) =====

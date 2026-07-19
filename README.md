@@ -206,6 +206,10 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
   - 每小时用量图表（模型维度堆叠，增量展示）
   - 每 5 分钟自动刷新
 - **配置管理**：阈值、监控 Region 列表、Webhook 设置
+- **版本管理**：
+  - 当前部署版本 vs GitHub 主仓库最新版本，有更新时提示
+  - 堆栈名称、最后部署时间、IP 白名单（读取 CloudFormation 栈参数）
+  - 内置升级命令说明
 - **⚠️ 安全提示**：本示例未实现用户认证，仅依赖 API Gateway Resource Policy 的 IP 白名单控制访问。如用于生产环境，请自行添加认证机制（如 Cognito、IAM Auth 等），避免管理界面暴露在公网
 
 ### 4. 通知推送
@@ -396,7 +400,8 @@ bedrock-cost-guard/
 │   ├── holiday.py         # 中国工作日判断（节假日/调休）
 │   ├── iam_scanner.py     # IAM Bedrock 权限扫描逻辑
 │   ├── pricing.py         # 模型价格匹配与费用估算
-│   └── labels.py          # CloudWatch 指标 label 解析（模型名/token类型提取）
+│   ├── labels.py          # CloudWatch 指标 label 解析（模型名/token类型提取）
+│   └── version.py         # 项目版本号定义
 ├── monitor/
 │   ├── __init__.py
 │   └── handler.py         # 用量监控 Lambda
@@ -423,7 +428,8 @@ bedrock-cost-guard/
 │   ├── test_iam_scanner.py
 │   ├── test_pricing.py
 │   ├── test_notify_policy.py
-│   └── test_labels.py
+│   ├── test_labels.py
+│   └── test_version.py
 └── docs/                  # 设计文档
 ```
 

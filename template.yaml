@@ -374,6 +374,10 @@ Resources:
         Variables:
           DDB_TABLE: !Ref ConfigTable
           RECONCILER_FUNCTION_NAME: !Sub "${AWS::StackName}-reconciler"
+          STACK_NAME: !Ref "AWS::StackName"
+          GITHUB_OWNER: !Ref GitHubOwner
+          GITHUB_REPO: !Ref GitHubRepo
+          GITHUB_BRANCH: !Ref Branch
 
   # ===== EventBridge Schedules =====
   MonitorSchedule:
