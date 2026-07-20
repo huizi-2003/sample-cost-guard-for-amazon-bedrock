@@ -1139,10 +1139,9 @@ async function loadVersionInfo() {
     // Summary cards
     document.getElementById('ver-stack-name').textContent = data.stack_name || '-';
 
-    // 当前版本：vX.Y.Z (sha前7位)
+    // 当前版本：显示 commit SHA 前 7 位
     const sha7 = data.commit_sha ? data.commit_sha.substring(0, 7) : '';
-    const currentText = data.current_version ? 'v' + data.current_version + (sha7 ? ' (' + sha7 + ')' : '') : '-';
-    document.getElementById('ver-current').textContent = currentText;
+    document.getElementById('ver-current').textContent = sha7 || '-';
 
     // 最新提交：远端 SHA 前 7 位
     document.getElementById('ver-latest-sha').textContent = data.latest_sha ? data.latest_sha.substring(0, 7) + (data.latest_sha_stale ? ' (缓存)' : '') : '-';

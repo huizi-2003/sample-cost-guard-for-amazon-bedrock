@@ -296,4 +296,3 @@ class TestImportErrorPath:
         assert data['latest_sha'] == 'remote_sha_xyz'
         assert data['has_update'] is None  # 本地 SHA 为空，无法判定
         assert data['allowed_cidrs'] == ['10.0.0.1/32']
-        assert data['current_version'] == '1.0.0'

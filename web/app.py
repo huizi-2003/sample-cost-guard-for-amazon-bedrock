@@ -853,8 +853,7 @@ _VERSION_CACHE_TTL = 3600  # 1 小时
 
 @app.get('/api/version')
 async def get_version_info():
-    """返回版本信息：当前版本 + commit SHA、堆栈名称、IP 白名单、远端最新 SHA。"""
-    from common.version import VERSION
+    """返回版本信息：commit SHA、堆栈名称、IP 白名单、远端最新 SHA。"""
 
     # 读取构建时注入的 commit SHA（容错：本地开发/旧部署可能没有这个文件）
     try:
@@ -869,7 +868,6 @@ async def get_version_info():
     upstream_branch = os.environ.get('GITHUB_BRANCH', 'main')
 
     result = {
-        'current_version': VERSION,
         'commit_sha': COMMIT_SHA,
         'latest_sha': None,
         'has_update': None,
