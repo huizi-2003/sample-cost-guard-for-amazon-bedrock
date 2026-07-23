@@ -760,7 +760,7 @@ async def put_config_ai_summary(request: Request):
         return JSONResponse({'error': 'Invalid model_id format'}, status_code=400)
 
     if not model_id:
-        model_id = 'us.anthropic.claude-sonnet-4-20250514-v1:0'
+        model_id = 'us.amazon.nova-2-lite-v1:0'
 
     save_ai_summary_config(enabled, model_id)
     return {'ok': True, 'enabled': enabled, 'model_id': model_id}

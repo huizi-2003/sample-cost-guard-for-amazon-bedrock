@@ -566,6 +566,8 @@ def handler(event, context):
             ai_summary = _get_ai_summary(combined, ', '.join(dates), ai_config)
             if ai_summary:
                 combined += f"\n\n📊 AI 总结：\n{ai_summary}"
+            else:
+                combined += "\n\n⚠ AI 总结生成失败（详见 reconciler / AgentCore 日志）"
 
         send_webhook_all(combined, webhooks)
 

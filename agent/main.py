@@ -5,7 +5,7 @@
 
 入口合约：
   POST /invocations
-  Body: {"model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0", "prompt": "..."}
+  Body: {"model_id": "us.amazon.nova-2-lite-v1:0", "prompt": "..."}
   Response: "总结文本"
 """
 
@@ -31,7 +31,7 @@ SYSTEM_PROMPT = """你是 AWS Bedrock 费用分析助手。你会收到一段 Be
 @app.entrypoint
 def invoke(payload):
     """Agent 入口，接收 model_id + prompt，返回 AI 生成的总结文本。"""
-    model_id = payload.get("model_id", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+    model_id = payload.get("model_id", "us.amazon.nova-2-lite-v1:0")
     prompt = payload.get("prompt", "")
 
     if not prompt:

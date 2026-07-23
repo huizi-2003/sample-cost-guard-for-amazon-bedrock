@@ -203,14 +203,14 @@ def get_ai_summary_config():
     """获取 AI 账单总结配置。
 
     返回 dict: {'enabled': bool, 'model_id': str}
-    默认关闭，model_id 默认为 Claude Sonnet。
+    默认关闭，model_id 默认为 Nova 2 Lite。
     """
     item = get_item('CONFIG', 'ai_summary')
     if not item:
-        return {'enabled': False, 'model_id': 'us.anthropic.claude-sonnet-4-20250514-v1:0'}
+        return {'enabled': False, 'model_id': 'us.amazon.nova-2-lite-v1:0'}
     return {
         'enabled': item.get('enabled', 'false') == 'true',
-        'model_id': item.get('model_id', 'us.anthropic.claude-sonnet-4-20250514-v1:0'),
+        'model_id': item.get('model_id', 'us.amazon.nova-2-lite-v1:0'),
     }
 
 

@@ -235,6 +235,33 @@ class TestHandlerAiGating:
     @patch('reconciler.handler.get_webhook_config')
     @patch('reconciler.handler.get_account_id')
     @patch('reconciler.handler.get_notify_policy')
+    def test_always_enabled_ai_failure_appends_warning(
+        self, mock_policy, mock_acct, mock_webhooks, mock_reconcile, mock_send,
+        mock_ai_cfg, mock_get_ai,
+    ):
+        mock_policy.return_value = 'always'
+        mock_acct.return_value = '123456789012'
+        mock_webhooks.return_value = [{'url': 'http://t', 'type': 'feishu'}]
+        mock_reconcile.return_value = {'msg': 'report', 'total_actual': 1.0, 'reconcile_diff_pct': 0.0}
+        mock_ai_cfg.return_value = {'enabled': True, 'model_id': 'us.amazon.nova-2-lite-v1:0'}
+        mock_get_ai.return_value = None
+
+        from reconciler.handler import handler
+        result = handler({}, None)
+
+        assert result['statusCode'] == 200
+        mock_get_ai.assert_called_once()
+        mock_send.assert_called_once()
+        pushed_text = mock_send.call_args[0][0]
+        assert '⚠ AI 总结生成失败' in pushed_text
+
+    @patch('reconciler.handler._get_ai_summary')
+    @patch('reconciler.handler.get_ai_summary_config')
+    @patch('reconciler.handler.send_webhook_all')
+    @patch('reconciler.handler.reconcile_one')
+    @patch('reconciler.handler.get_webhook_config')
+    @patch('reconciler.handler.get_account_id')
+    @patch('reconciler.handler.get_notify_policy')
     def test_always_disabled_skips_ai_but_pushes(
         self, mock_policy, mock_acct, mock_webhooks, mock_reconcile, mock_send,
         mock_ai_cfg, mock_get_ai,

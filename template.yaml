@@ -83,8 +83,8 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Role: !GetAtt CodeFetcherRole.Arn
-      Timeout: 120
-      MemorySize: 256
+      Timeout: 600        # agent 依赖约 27MB 下载 + 三个 zip 构建，留足余量
+      MemorySize: 1024    # zip 全部在内存 BytesIO 里构建，且内存越大 CPU 越快
       Code:
         ZipFile: |
           import urllib.request, boto3, zipfile, io, subprocess, tempfile, os, json, datetime
@@ -181,7 +181,8 @@ Resources:
                   resp2 = s3.put_object(Bucket=p['Bucket'], Key='web.zip', Body=buf2.read())
 
                   # Build agent.zip (agent/ code for AgentCore Runtime)
-                  # Only package source code; AgentCore Runtime installs deps from pyproject.toml automatically.
+                  # AgentCore 直接代码部署不会自动装依赖，必须把 arm64 wheel 打进 zip
+                  # （Runtime 为 PYTHON_3_13 / arm64，--only-binary 确保只拉预编译 wheel）
                   tmpdir2 = tempfile.mkdtemp()
                   for name in src.namelist():
                       if name.endswith('/'):
@@ -196,6 +197,16 @@ Resources:
                               os.makedirs(os.path.dirname(dest), exist_ok=True)
                               with open(dest, 'wb') as f:
                                   f.write(src.read(name))
+                  subprocess.check_call([
+                      'pip', 'install',
+                      '--platform', 'manylinux2014_aarch64',
+                      '--implementation', 'cp',
+                      '--python-version', '3.13',
+                      '--only-binary=:all:',
+                      '--no-compile',
+                      '-r', os.path.join(tmpdir2, 'requirements.txt'),
+                      '-t', tmpdir2, '--quiet'
+                  ])
                   buf3 = io.BytesIO()
                   with zipfile.ZipFile(buf3, 'w', zipfile.ZIP_DEFLATED) as out:
                       for root, dirs, files in os.walk(tmpdir2):
@@ -660,6 +671,7 @@ Resources:
             S3:
               Bucket: !Ref CodeBucket
               Prefix: agent.zip
+              VersionId: !GetAtt CodeObject.AgentVersionId
           Runtime: PYTHON_3_13
           EntryPoint:
             - main.py
