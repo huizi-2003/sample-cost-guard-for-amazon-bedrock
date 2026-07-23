@@ -466,7 +466,11 @@ def _get_ai_summary(report_text, date_str, ai_config):
         return None
 
     try:
-        client = boto3.client('bedrock-agentcore', region_name='us-east-1')
+        # AgentCore Runtime 与本栈同区域部署；从 endpoint ARN 第 4 段解析 region，
+        # 避免非 us-east-1 部署时固定 us-east-1 导致调用失败。解析失败回退到 Lambda 运行区域。
+        arn_parts = endpoint_arn.split(':')
+        region = arn_parts[3] if len(arn_parts) > 3 and arn_parts[3] else (os.environ.get('AWS_REGION') or 'us-east-1')
+        client = boto3.client('bedrock-agentcore', region_name=region)
         prompt = f"以下是 {date_str} 的 Bedrock 对账数据，请生成中文摘要：\n\n{report_text}"
         payload = json.dumps({
             'model_id': ai_config['model_id'],
@@ -541,14 +545,7 @@ def handler(event, context):
         else:
             combined += r['msg']
 
-    # AI 账单总结（可选功能，默认关闭）
-    ai_config = get_ai_summary_config()
-    if ai_config['enabled']:
-        ai_summary = _get_ai_summary(combined, ', '.join(dates), ai_config)
-        if ai_summary:
-            combined += f"\n\n📊 AI 总结：\n{ai_summary}"
-
-    # 推送策略判断
+    # 推送策略判断（先判断是否推送，避免不推送时仍调用 AI 产生模型费用）
     notify_policy = get_notify_policy()
     beijing_now = now.astimezone(BEIJING_TZ)
     should_notify = True
@@ -561,7 +558,15 @@ def handler(event, context):
         if not should_notify:
             logger.info(f"Notify policy is 'workday' and today ({beijing_now.strftime('%Y-%m-%d')}) is not a workday, skipping notification")
 
+    # AI 账单总结（可选功能，默认关闭）。仅在确定会推送时才调用——
+    # 不推送日报时若仍调用 AI，只会白白产生模型费用而结果无人看到。
     if should_notify:
+        ai_config = get_ai_summary_config()
+        if ai_config['enabled']:
+            ai_summary = _get_ai_summary(combined, ', '.join(dates), ai_config)
+            if ai_summary:
+                combined += f"\n\n📊 AI 总结：\n{ai_summary}"
+
         send_webhook_all(combined, webhooks)
 
     logger.info(combined)
