@@ -482,8 +482,13 @@ def _get_ai_summary(report_text, date_str, ai_config):
             qualifier=qualifier,
             payload=payload.encode('utf-8'),
         )
-        body = json.loads(resp['response'].read())
-        return body.get('result') or body.get('text') or str(body)
+        raw = resp['response'].read().decode('utf-8')
+        # Agent 可能返回 JSON（含 result/text 字段）或纯文本
+        try:
+            body = json.loads(raw)
+            return body.get('result') or body.get('text') or str(body)
+        except (json.JSONDecodeError, TypeError):
+            return raw
     except Exception as e:
         logger.error(f"AI summary failed: {e}")
         return None
