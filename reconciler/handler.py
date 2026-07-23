@@ -482,7 +482,7 @@ def _get_ai_summary(report_text, date_str, ai_config):
             qualifier=qualifier,
             payload=payload.encode('utf-8'),
         )
-        body = json.loads(resp['body'].read())
+        body = json.loads(resp['response'].read())
         return body.get('result') or body.get('text') or str(body)
     except Exception as e:
         logger.error(f"AI summary failed: {e}")
