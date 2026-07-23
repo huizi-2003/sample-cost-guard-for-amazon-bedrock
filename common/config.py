@@ -197,3 +197,30 @@ def get_reconcile_dates(limit=30):
         scan_kwargs['ExclusiveStartKey'] = resp['LastEvaluatedKey']
     dates = sorted([item['PK'].replace('RECONCILE#', '') for item in all_items], reverse=True)
     return dates[:limit]
+
+
+def get_ai_summary_config():
+    """获取 AI 账单总结配置。
+
+    返回 dict: {'enabled': bool, 'model_id': str}
+    默认关闭，model_id 默认为 Claude Sonnet。
+    """
+    item = get_item('CONFIG', 'ai_summary')
+    if not item:
+        return {'enabled': False, 'model_id': 'us.anthropic.claude-sonnet-4-20250514-v1:0'}
+    return {
+        'enabled': item.get('enabled', 'false') == 'true',
+        'model_id': item.get('model_id', 'us.anthropic.claude-sonnet-4-20250514-v1:0'),
+    }
+
+
+def save_ai_summary_config(enabled: bool, model_id: str):
+    """保存 AI 账单总结配置。
+
+    Args:
+        enabled: 是否开启 AI 总结
+        model_id: Bedrock 模型 ID
+    """
+    put_item('CONFIG', 'ai_summary',
+             enabled='true' if enabled else 'false',
+             model_id=model_id)

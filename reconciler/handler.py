@@ -24,12 +24,13 @@
 
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
-from common.config import save_reconcile_record, get_webhook_config, get_notify_policy, get_account_id, query_by_pk, _get_table
+from common.config import save_reconcile_record, get_webhook_config, get_notify_policy, get_account_id, query_by_pk, _get_table, get_ai_summary_config
 from common.holiday import is_workday
 from common.webhook import send_webhook_all
 
@@ -454,6 +455,34 @@ def reconcile_one(start_date, end_date, now):
     return {'msg': msg, 'total_actual': total_actual, 'reconcile_diff_pct': reconcile_diff_pct}
 
 
+def _get_ai_summary(report_text, date_str, ai_config):
+    """调用 AgentCore endpoint 生成 AI 账单总结。
+
+    失败时返回 None（不阻塞日报推送）。
+    """
+    endpoint_arn = os.environ.get('AGENTCORE_ENDPOINT_ARN', '')
+    if not endpoint_arn:
+        logger.warning("AGENTCORE_ENDPOINT_ARN not set, skipping AI summary")
+        return None
+
+    try:
+        client = boto3.client('bedrock-agentcore', region_name='us-east-1')
+        prompt = f"以下是 {date_str} 的 Bedrock 对账数据，请生成中文摘要：\n\n{report_text}"
+        payload = json.dumps({
+            'model_id': ai_config['model_id'],
+            'prompt': prompt,
+        })
+        resp = client.invoke_agent_runtime(
+            agentRuntimeEndpointArn=endpoint_arn,
+            payload=payload.encode('utf-8'),
+        )
+        body = json.loads(resp['body'].read())
+        return body.get('result') or body.get('text') or str(body)
+    except Exception as e:
+        logger.error(f"AI summary failed: {e}")
+        return None
+
+
 def handler(event, context):
     now = datetime.now(timezone.utc)
     webhooks = get_webhook_config()
@@ -498,6 +527,13 @@ def handler(event, context):
             combined += f"  ⚠ Cost Explorer 查询失败: {r['ce_error']}\n"
         else:
             combined += r['msg']
+
+    # AI 账单总结（可选功能，默认关闭）
+    ai_config = get_ai_summary_config()
+    if ai_config['enabled']:
+        ai_summary = _get_ai_summary(combined, ', '.join(dates), ai_config)
+        if ai_summary:
+            combined += f"\n\n📊 AI 总结：\n{ai_summary}"
 
     # 推送策略判断
     notify_policy = get_notify_policy()

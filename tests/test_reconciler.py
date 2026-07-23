@@ -405,8 +405,9 @@ def test_valid_historical_date_sets_correct_dates(
 @patch('reconciler.handler.get_cloudwatch_token_total', return_value=(0, [], {}))
 @patch('reconciler.handler.get_cost_explorer_data', return_value=[])
 @patch('reconciler.handler.get_webhook_config', return_value=[])
+@patch('reconciler.handler.get_ai_summary_config', return_value={'enabled': False, 'model_id': 'us.anthropic.claude-sonnet-4-20250514-v1:0'})
 def test_missing_date_falls_back_to_t_minus_2(
-    mock_webhook_config, mock_ce, mock_cw, mock_save, mock_send, mock_policy, mock_account_id
+    mock_ai_summary, mock_webhook_config, mock_ce, mock_cw, mock_save, mock_send, mock_policy, mock_account_id
 ):
     """**Validates: Requirements 7.1**
 

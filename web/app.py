@@ -23,7 +23,8 @@ from common.config import (
     get_reconcile_dates, put_item, get_item, query_by_pk,
     get_webhook_config, save_webhook_config,
     get_notify_policy, save_notify_policy,
-    get_monitor_enabled, save_monitor_enabled
+    get_monitor_enabled, save_monitor_enabled,
+    get_ai_summary_config, save_ai_summary_config
 )
 from common.pricing import PRICING, match_pricing as _match_pricing
 from common.labels import (
@@ -733,6 +734,36 @@ async def put_config_notify_policy(request: Request):
         return JSONResponse({'error': "policy must be 'always', 'workday' or 'never'"}, status_code=400)
     save_notify_policy(policy)
     return {'ok': True, 'policy': policy}
+
+
+@app.get('/api/config/ai-summary')
+async def get_config_ai_summary():
+    """获取 AI 账单总结配置（enabled + model_id）"""
+    return get_ai_summary_config()
+
+
+@app.put('/api/config/ai-summary')
+async def put_config_ai_summary(request: Request):
+    """设置 AI 账单总结配置"""
+    data = await request.json()
+    enabled = data.get('enabled')
+    model_id = data.get('model_id', '').strip()
+
+    if not isinstance(enabled, bool):
+        return JSONResponse({'error': 'enabled must be a boolean'}, status_code=400)
+
+    if enabled and not model_id:
+        return JSONResponse({'error': 'model_id is required when enabling AI summary'}, status_code=400)
+
+    # 验证 model_id 格式基本合理
+    if model_id and not model_id.replace('.', '').replace('-', '').replace(':', '').replace('_', '').isalnum():
+        return JSONResponse({'error': 'Invalid model_id format'}, status_code=400)
+
+    if not model_id:
+        model_id = 'us.anthropic.claude-sonnet-4-20250514-v1:0'
+
+    save_ai_summary_config(enabled, model_id)
+    return {'ok': True, 'enabled': enabled, 'model_id': model_id}
 
 
 # ===== IAM Bedrock 权限扫描 =====

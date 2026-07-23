@@ -271,10 +271,37 @@ tr:hover { background: #faf7f4; }
   </div>
 
   <!-- 卡片 4: 监控 Region -->
-  <div style="background:#fff;border:1px solid #e8e0d8;border-radius:12px;padding:24px">
+  <div style="background:#fff;border:1px solid #e8e0d8;border-radius:12px;padding:24px;margin-bottom:20px">
     <h3 style="margin:0 0 8px">监控 Region</h3>
     <p style="color:#999;font-size:13px;margin:0 0 12px">以下 Region 正在被监控（系统自动配置，无需修改）</p>
     <div id="regions-display" style="padding:10px;background:#faf7f4;border:1px solid #e8e0d8;border-radius:8px;font-family:monospace;font-size:12px;color:#6b6560;line-height:1.8"></div>
+  </div>
+
+  <!-- 卡片 5: AI 账单总结 -->
+  <div style="background:#fff;border:1px solid #e8e0d8;border-radius:12px;padding:24px">
+    <h3 style="margin:0 0 12px">AI 账单总结<span style="font-size:12px;font-weight:400;color:#999;margin-left:8px">（AgentCore）</span></h3>
+    <p style="color:#6b6560;font-size:13px;margin:0 0 16px">开启后，每日对账完成时自动调用 AI 生成中文费用摘要，追加到通知推送中。基于 Amazon Bedrock AgentCore Runtime。</p>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer">
+        <input type="checkbox" id="ai-summary-toggle" onchange="toggleAiSummaryModel()" style="opacity:0;width:0;height:0">
+        <span style="position:absolute;inset:0;background:#ccc;border-radius:24px;transition:.3s"></span>
+        <span style="position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 1px 3px rgba(0,0,0,0.2)" id="ai-summary-toggle-dot"></span>
+      </label>
+      <span id="ai-summary-toggle-label" style="font-size:14px;font-weight:500">已关闭</span>
+    </div>
+    <div id="ai-summary-model-section" style="display:none;margin-top:12px">
+      <label style="font-size:14px;font-weight:500;display:block;margin-bottom:8px">模型选择</label>
+      <select id="ai-summary-model" style="width:100%;max-width:480px;padding:8px 12px;border:1px solid #e8e0d8;border-radius:8px;font-size:14px;background:#faf7f4">
+        <option value="us.anthropic.claude-sonnet-4-20250514-v1:0">Claude Sonnet 4 (推荐，性价比高)</option>
+        <option value="us.anthropic.claude-haiku-4-20250514-v1:0">Claude Haiku 4 (最便宜，速度最快)</option>
+        <option value="us.anthropic.claude-opus-4-20250514-v1:0">Claude Opus 4 (最强，费用较高)</option>
+        <option value="us.amazon.nova-pro-v1:0">Amazon Nova Pro (AWS 自研)</option>
+        <option value="us.amazon.nova-lite-v1:0">Amazon Nova Lite (AWS 自研，低成本)</option>
+      </select>
+      <p style="color:#999;font-size:12px;margin:8px 0 0">每日一次总结调用，费用约 $0.001~0.01/次（取决于模型）</p>
+    </div>
+    <button class="btn" onclick="saveAiSummary()" style="margin-top:16px">保存</button>
+    <div id="ai-summary-msg" style="margin-top:8px"></div>
   </div>
 
 </div>
@@ -721,6 +748,60 @@ async function saveNotifyPolicy() {
     body: JSON.stringify({policy: selected.value})
   });
   const msgEl = document.getElementById('np-msg');
+  if (resp.ok) {
+    msgEl.innerHTML = '<div class="msg">已保存</div>';
+  } else {
+    const err = await resp.json();
+    msgEl.innerHTML = `<div class="msg" style="color:red">${err.error || '保存失败'}</div>`;
+  }
+  setTimeout(() => msgEl.innerHTML = '', 2000);
+}
+
+// ===== AI 账单总结 =====
+async function loadAiSummary() {
+  try {
+    const data = await (await fetch(`${API}/api/config/ai-summary`)).json();
+    const toggle = document.getElementById('ai-summary-toggle');
+    toggle.checked = data.enabled;
+    updateAiSummaryToggleUI(data.enabled);
+    if (data.model_id) {
+      document.getElementById('ai-summary-model').value = data.model_id;
+    }
+  } catch(e) { console.error('loadAiSummary:', e); }
+}
+
+function updateAiSummaryToggleUI(enabled) {
+  const dot = document.getElementById('ai-summary-toggle-dot');
+  const label = document.getElementById('ai-summary-toggle-label');
+  const section = document.getElementById('ai-summary-model-section');
+  const track = dot.previousElementSibling;
+  if (enabled) {
+    dot.style.left = '22px'; track.style.background = '#6b8f71';
+    label.textContent = '已开启';
+    section.style.display = 'block';
+  } else {
+    dot.style.left = '2px'; track.style.background = '#ccc';
+    label.textContent = '已关闭';
+    section.style.display = 'none';
+  }
+}
+
+function toggleAiSummaryModel() {
+  const enabled = document.getElementById('ai-summary-toggle').checked;
+  updateAiSummaryToggleUI(enabled);
+}
+
+async function saveAiSummary() {
+  const enabled = document.getElementById('ai-summary-toggle').checked;
+  const model_id = document.getElementById('ai-summary-model').value;
+  const msgEl = document.getElementById('ai-summary-msg');
+
+  if (enabled && !model_id) { alert('请选择模型'); return; }
+
+  const resp = await fetch(`${API}/api/config/ai-summary`, {
+    method: 'PUT', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({enabled, model_id})
+  });
   if (resp.ok) {
     msgEl.innerHTML = '<div class="msg">已保存</div>';
   } else {
@@ -1180,6 +1261,7 @@ loadRegions();
 loadWebhook();
 loadMonitorEnabled();
 loadNotifyPolicy();
+loadAiSummary();
 loadIamScan();
 loadVersionInfo();
 </script>

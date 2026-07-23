@@ -180,9 +180,56 @@ Resources:
                   buf2.seek(0)
                   resp2 = s3.put_object(Bucket=p['Bucket'], Key='web.zip', Body=buf2.read())
 
+                  # Build agent.zip (agent/ code for AgentCore Runtime)
+                  tmpdir2 = tempfile.mkdtemp()
+                  for name in src.namelist():
+                      if name.endswith('/'):
+                          continue
+                      parts = name.split('/', 1)
+                      inner = parts[1] if len(parts) > 1 else parts[0]
+                      if inner and inner.startswith('agent/'):
+                          # Flatten: agent/main.py → main.py (AgentCore expects entrypoint at root)
+                          flat_name = inner[len('agent/'):]
+                          if flat_name:
+                              dest = os.path.join(tmpdir2, flat_name)
+                              os.makedirs(os.path.dirname(dest), exist_ok=True)
+                              with open(dest, 'wb') as f:
+                                  f.write(src.read(name))
+                  # Install agent dependencies (strands-agents, bedrock-agentcore)
+                  agent_req = os.path.join(tmpdir2, 'pyproject.toml')
+                  if os.path.exists(agent_req):
+                      subprocess.check_call([
+                          'pip', 'install',
+                          '--platform', 'manylinux2014_aarch64',
+                          '--only-binary=:all:',
+                          '--implementation', 'cp',
+                          '--python-version', '3.13',
+                          '-r', agent_req, '-t', tmpdir2, '--quiet'
+                      ])
+                  else:
+                      subprocess.check_call([
+                          'pip', 'install',
+                          '--platform', 'manylinux2014_aarch64',
+                          '--only-binary=:all:',
+                          '--implementation', 'cp',
+                          '--python-version', '3.13',
+                          'bedrock-agentcore', 'strands-agents',
+                          '-t', tmpdir2, '--quiet'
+                      ])
+                  buf3 = io.BytesIO()
+                  with zipfile.ZipFile(buf3, 'w', zipfile.ZIP_DEFLATED) as out:
+                      for root, dirs, files in os.walk(tmpdir2):
+                          for f in files:
+                              full = os.path.join(root, f)
+                              arcname = os.path.relpath(full, tmpdir2)
+                              out.write(full, arcname)
+                  buf3.seek(0)
+                  resp3 = s3.put_object(Bucket=p['Bucket'], Key='agent.zip', Body=buf3.read())
+
                   _send(event, context, 'SUCCESS', {
                       'LambdaVersionId': resp1.get('VersionId', 'null'),
                       'WebVersionId': resp2.get('VersionId', 'null'),
+                      'AgentVersionId': resp3.get('VersionId', 'null'),
                   })
               except Exception as e:
                   _send(event, context, 'FAILED', {'Error': str(e)})
@@ -255,6 +302,10 @@ Resources:
                 Resource: '*'
               - Effect: Allow
                 Action:
+                  - bedrock-agentcore:InvokeAgentRuntime
+                Resource: '*'
+              - Effect: Allow
+                Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
@@ -297,6 +348,7 @@ Resources:
       Environment:
         Variables:
           DDB_TABLE: !Ref ConfigTable
+          AGENTCORE_ENDPOINT_ARN: !GetAtt AgentCoreEndpoint.AgentRuntimeEndpointArn
 
   # ===== Lambda: Web Console =====
   WebLambdaRole:
@@ -584,6 +636,67 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebApi}/*"
 
+  # ===== AgentCore: AI 账单总结 Agent =====
+  AgentCoreRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-agentcore-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AgentCoreBedrockInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/agent.zip"
+
+  AgentCoreRuntime:
+    Type: AWS::BedrockAgentCore::Runtime
+    DependsOn: CodeObject
+    Properties:
+      AgentRuntimeName: bedrock_cost_guard_summarizer
+      Description: "AI billing summary agent for Bedrock Cost Guard"
+      AgentRuntimeArtifact:
+        CodeConfiguration:
+          Code:
+            S3:
+              Bucket: !Ref CodeBucket
+              Prefix: agent.zip
+          Runtime: PYTHON_3_13
+          EntryPoint:
+            - main.py
+      NetworkConfiguration:
+        NetworkMode: PUBLIC
+      RoleArn: !GetAtt AgentCoreRole.Arn
+      LifecycleConfiguration:
+        IdleRuntimeSessionTimeout: 300
+        MaxLifetime: 1800
+
+  AgentCoreEndpoint:
+    Type: AWS::BedrockAgentCore::RuntimeEndpoint
+    Properties:
+      AgentRuntimeId: !GetAtt AgentCoreRuntime.AgentRuntimeId
+      Name: bedrock_cost_guard_summarizer_ep
+
 Outputs:
   MonitorFunctionName:
     Value: !Ref MonitorFunction
@@ -596,3 +709,6 @@ Outputs:
   WebConsoleUrl:
     Value: !Sub "https://${WebApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
     Description: Web Console URL
+  AgentCoreEndpointArn:
+    Value: !GetAtt AgentCoreEndpoint.AgentRuntimeEndpointArn
+    Description: AgentCore Runtime Endpoint ARN (for AI billing summary)
