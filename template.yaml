@@ -181,6 +181,7 @@ Resources:
                   resp2 = s3.put_object(Bucket=p['Bucket'], Key='web.zip', Body=buf2.read())
 
                   # Build agent.zip (agent/ code for AgentCore Runtime)
+                  # Only package source code; AgentCore Runtime installs deps from pyproject.toml automatically.
                   tmpdir2 = tempfile.mkdtemp()
                   for name in src.namelist():
                       if name.endswith('/'):
@@ -195,27 +196,6 @@ Resources:
                               os.makedirs(os.path.dirname(dest), exist_ok=True)
                               with open(dest, 'wb') as f:
                                   f.write(src.read(name))
-                  # Install agent dependencies (strands-agents, bedrock-agentcore)
-                  agent_req = os.path.join(tmpdir2, 'pyproject.toml')
-                  if os.path.exists(agent_req):
-                      subprocess.check_call([
-                          'pip', 'install',
-                          '--platform', 'manylinux2014_aarch64',
-                          '--only-binary=:all:',
-                          '--implementation', 'cp',
-                          '--python-version', '3.13',
-                          '-r', agent_req, '-t', tmpdir2, '--quiet'
-                      ])
-                  else:
-                      subprocess.check_call([
-                          'pip', 'install',
-                          '--platform', 'manylinux2014_aarch64',
-                          '--only-binary=:all:',
-                          '--implementation', 'cp',
-                          '--python-version', '3.13',
-                          'bedrock-agentcore', 'strands-agents',
-                          '-t', tmpdir2, '--quiet'
-                      ])
                   buf3 = io.BytesIO()
                   with zipfile.ZipFile(buf3, 'w', zipfile.ZIP_DEFLATED) as out:
                       for root, dirs, files in os.walk(tmpdir2):
@@ -640,7 +620,6 @@ Resources:
   AgentCoreRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${AWS::StackName}-agentcore-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
