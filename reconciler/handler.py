@@ -472,8 +472,14 @@ def _get_ai_summary(report_text, date_str, ai_config):
             'model_id': ai_config['model_id'],
             'prompt': prompt,
         })
+        # endpoint ARN 格式: .../runtime/{id}/runtime-endpoint/{ep_name}
+        # invoke_agent_runtime 需要 runtime ARN + qualifier（endpoint 名称）
+        parts = endpoint_arn.split('/runtime-endpoint/')
+        runtime_arn = parts[0]  # .../runtime/{id}
+        qualifier = parts[1] if len(parts) > 1 else 'DEFAULT'
         resp = client.invoke_agent_runtime(
-            agentRuntimeArn=endpoint_arn,
+            agentRuntimeArn=runtime_arn,
+            qualifier=qualifier,
             payload=payload.encode('utf-8'),
         )
         body = json.loads(resp['body'].read())
