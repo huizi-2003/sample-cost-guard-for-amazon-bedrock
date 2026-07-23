@@ -473,7 +473,7 @@ def _get_ai_summary(report_text, date_str, ai_config):
             'prompt': prompt,
         })
         resp = client.invoke_agent_runtime(
-            agentRuntimeEndpointArn=endpoint_arn,
+            agentRuntimeArn=endpoint_arn,
             payload=payload.encode('utf-8'),
         )
         body = json.loads(resp['body'].read())
