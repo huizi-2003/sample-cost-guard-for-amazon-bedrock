@@ -42,7 +42,7 @@ def invoke(payload):
     model = BedrockModel(model_id=model_id)
     agent = Agent(model=model, system_prompt=SYSTEM_PROMPT)
     response = agent(prompt)
-    text = response.message['content'][0]['text']
+    text = str(response).strip()
 
     logger.info(f"Summary generated, length: {len(text)}")
     return text

@@ -492,7 +492,11 @@ def _get_ai_summary(report_text, date_str, ai_config):
             body = json.loads(raw)
             if isinstance(body, str):
                 return body
-            return body.get('result') or body.get('text') or str(body)
+            text = body.get('result') or body.get('text')
+            if isinstance(text, str) and text.strip():
+                return text
+            logger.warning(f"Unexpected agent response shape: {raw[:200]}")
+            return None
         except (json.JSONDecodeError, TypeError, AttributeError):
             return raw
     except Exception as e:
@@ -558,9 +562,9 @@ def handler(event, context):
         if not should_notify:
             logger.info(f"Notify policy is 'workday' and today ({beijing_now.strftime('%Y-%m-%d')}) is not a workday, skipping notification")
 
-    # AI 账单总结（可选功能，默认关闭）。仅在确定会推送时才调用——
+    # AI 账单总结（可选功能，默认关闭）。仅在确定会推送且有 webhook 配置时才调用——
     # 不推送日报时若仍调用 AI，只会白白产生模型费用而结果无人看到。
-    if should_notify:
+    if should_notify and webhooks:
         ai_config = get_ai_summary_config()
         if ai_config['enabled']:
             ai_summary = _get_ai_summary(combined, ', '.join(dates), ai_config)
@@ -569,6 +573,7 @@ def handler(event, context):
             else:
                 combined += "\n\n⚠ AI 总结生成失败（详见 reconciler / AgentCore 日志）"
 
+    if should_notify:
         send_webhook_all(combined, webhooks)
 
     logger.info(combined)

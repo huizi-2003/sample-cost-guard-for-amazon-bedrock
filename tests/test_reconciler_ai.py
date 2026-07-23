@@ -278,3 +278,30 @@ class TestHandlerAiGating:
         assert result['statusCode'] == 200
         mock_get_ai.assert_not_called()
         mock_send.assert_called_once()
+
+    @patch('reconciler.handler._get_ai_summary')
+    @patch('reconciler.handler.get_ai_summary_config')
+    @patch('reconciler.handler.send_webhook_all')
+    @patch('reconciler.handler.reconcile_one')
+    @patch('reconciler.handler.get_webhook_config')
+    @patch('reconciler.handler.get_account_id')
+    @patch('reconciler.handler.get_notify_policy')
+    def test_empty_webhooks_skips_ai_but_still_calls_send(
+        self, mock_policy, mock_acct, mock_webhooks, mock_reconcile, mock_send,
+        mock_ai_cfg, mock_get_ai,
+    ):
+        """When webhooks list is empty, AI should NOT be called (saves cost),
+        but send_webhook_all is still invoked (it logs-and-skips internally)."""
+        mock_policy.return_value = 'always'
+        mock_acct.return_value = '123456789012'
+        mock_webhooks.return_value = []  # 没配 webhook
+        mock_reconcile.return_value = {'msg': 'report', 'total_actual': 1.0, 'reconcile_diff_pct': 0.0}
+        mock_ai_cfg.return_value = {'enabled': True, 'model_id': 'us.amazon.nova-2-lite-v1:0'}
+
+        from reconciler.handler import handler
+        result = handler({}, None)
+
+        assert result['statusCode'] == 200
+        mock_get_ai.assert_not_called()   # 没有 webhook 就不该花钱调 AI
+        mock_ai_cfg.assert_not_called()   # 甚至不读取 AI 配置
+        mock_send.assert_called_once()    # send_webhook_all 仍被调用（空列表时内部打日志跳过）
