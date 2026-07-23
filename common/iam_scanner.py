@@ -263,8 +263,14 @@ def scan_iam_identities():
             if bedrock_actions:
                 # 提取信任关系（谁能 assume 这个 role）
                 trust = role.get('AssumeRolePolicyDocument', {})
+                trust_statements = trust.get('Statement', []) if isinstance(trust, dict) else []
+                # IAM 允许 Statement 为单个 dict 而非数组（与 _extract_bedrock_actions 同一处理）
+                if isinstance(trust_statements, dict):
+                    trust_statements = [trust_statements]
                 trust_principals = []
-                for stmt in trust.get('Statement', []):
+                for stmt in trust_statements:
+                    if not isinstance(stmt, dict):
+                        continue
                     if stmt.get('Effect') == 'Allow':
                         principal = stmt.get('Principal', {})
                         if isinstance(principal, str):

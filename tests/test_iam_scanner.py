@@ -350,3 +350,118 @@ class TestCheckGroupPolicies:
         assert all('via_group' not in gp for gp in s2)
         # 且底层托管策略只被读一次（第二次命中组缓存）
         iam.list_attached_group_policies.assert_called_once()
+
+
+class TestTrustStatementAsSingleDict:
+    """Regression: AssumeRolePolicyDocument.Statement can be a single dict (not array)."""
+
+    def _make_iam_client(self, role_trust_doc):
+        """Create a mock IAM client with a single role that has bedrock:InvokeModel."""
+        iam = MagicMock()
+        # Users — empty
+        user_paginator = MagicMock()
+        user_paginator.paginate.return_value = []
+        # Roles — one role with Bedrock access
+        role = {
+            'RoleName': 'TestRole',
+            'Arn': 'arn:aws:iam::123456789012:role/TestRole',
+            'Path': '/',
+            'CreateDate': MagicMock(isoformat=lambda: '2026-01-01T00:00:00Z'),
+            'AssumeRolePolicyDocument': role_trust_doc,
+        }
+        role_paginator = MagicMock()
+        role_paginator.paginate.return_value = [{'Roles': [role]}]
+        # Groups — empty
+        group_paginator = MagicMock()
+        group_paginator.paginate.return_value = []
+
+        def get_paginator(op):
+            if op == 'list_users':
+                return user_paginator
+            elif op == 'list_roles':
+                return role_paginator
+            elif op == 'list_groups':
+                return group_paginator
+            raise ValueError(f"Unexpected paginator: {op}")
+
+        iam.get_paginator.side_effect = get_paginator
+        # Role has one inline policy with bedrock:InvokeModel
+        iam.list_attached_role_policies.return_value = {'AttachedPolicies': []}
+        iam.list_role_policies.return_value = {'PolicyNames': ['InlineBedrockPolicy']}
+        iam.get_role_policy.return_value = {
+            'PolicyDocument': {
+                'Statement': [{'Effect': 'Allow', 'Action': 'bedrock:InvokeModel', 'Resource': '*'}]
+            }
+        }
+        return iam
+
+    def test_trust_statement_single_dict_extracts_principals(self):
+        """Statement as a single dict → trust_principals correctly extracted."""
+        from unittest.mock import patch
+        trust_doc = {
+            'Statement': {
+                'Effect': 'Allow',
+                'Principal': {'AWS': 'arn:aws:iam::111111111111:root'},
+                'Action': 'sts:AssumeRole',
+            }
+        }
+        iam = self._make_iam_client(trust_doc)
+
+        with patch('common.iam_scanner.boto3') as mock_boto:
+            mock_boto.client.return_value = iam
+            from common.iam_scanner import scan_iam_identities
+            results, unreadable = scan_iam_identities()
+
+        assert len(results) == 1
+        role_result = results[0]
+        assert role_result['identity_type'] == 'Role'
+        assert role_result['name'] == 'TestRole'
+        assert 'arn:aws:iam::111111111111:root' in role_result['trust_principals']
+
+    def test_trust_statement_single_dict_multiple_principals(self):
+        """Statement as single dict with multiple principals in a list."""
+        from unittest.mock import patch
+        trust_doc = {
+            'Statement': {
+                'Effect': 'Allow',
+                'Principal': {'AWS': [
+                    'arn:aws:iam::111111111111:root',
+                    'arn:aws:iam::222222222222:role/CrossAccount',
+                ]},
+                'Action': 'sts:AssumeRole',
+            }
+        }
+        iam = self._make_iam_client(trust_doc)
+
+        with patch('common.iam_scanner.boto3') as mock_boto:
+            mock_boto.client.return_value = iam
+            from common.iam_scanner import scan_iam_identities
+            results, _ = scan_iam_identities()
+
+        assert len(results) == 1
+        principals = results[0]['trust_principals']
+        assert 'arn:aws:iam::111111111111:root' in principals
+        assert 'arn:aws:iam::222222222222:role/CrossAccount' in principals
+
+    def test_trust_statement_non_dict_entry_skipped(self):
+        """If Statement list contains a non-dict entry, it's skipped gracefully."""
+        from unittest.mock import patch
+        trust_doc = {
+            'Statement': [
+                'invalid-entry',
+                {
+                    'Effect': 'Allow',
+                    'Principal': {'Service': 'lambda.amazonaws.com'},
+                    'Action': 'sts:AssumeRole',
+                },
+            ]
+        }
+        iam = self._make_iam_client(trust_doc)
+
+        with patch('common.iam_scanner.boto3') as mock_boto:
+            mock_boto.client.return_value = iam
+            from common.iam_scanner import scan_iam_identities
+            results, _ = scan_iam_identities()
+
+        assert len(results) == 1
+        assert 'lambda.amazonaws.com' in results[0]['trust_principals']

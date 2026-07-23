@@ -322,9 +322,17 @@ def handler(event, context):
         if window in cost_thresholds and cost_eval[window] > cost_thresholds[window]:
             alerts.append({'window': window, 'cost': cost_eval[window], 'threshold': cost_thresholds[window]})
 
-    # warm-up 保护：有历史记录但无有效基线时（过渡期），跳过 5min/15min 判定避免误报
-    if records_today and base_5 is None:
-        alerts = [a for a in alerts if a['window'] == 'daily']
+    # warm-up 保护（按窗口分别判定）：当天已有记录但对应基线缺失时，跳过该窗口，
+    # 避免把全天累计当作 5min/15min 增量误报。
+    # records_today 为空（午夜首轮）时不跳过：此时全天累计本身就是自午夜以来的增量，
+    # 用它判定是既有设计（见 test_first_run_of_day_no_records_uses_full_daily）。
+    if records_today:
+        skip = set()
+        if base_5 is None:
+            skip.add('5min')
+        if base_15 is None:
+            skip.add('15min')
+        alerts = [a for a in alerts if a['window'] not in skip]
 
     if alerts:
         alerts = [a for a in alerts if not should_suppress(a['window'], now, webhooks)]

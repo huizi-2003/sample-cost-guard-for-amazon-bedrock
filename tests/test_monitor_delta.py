@@ -497,3 +497,34 @@ class TestHandlerDeltaAlert:
         assert 'read' in order and 'write' in order
         assert order.index('read') < order.index('write'), \
             "baseline read must happen BEFORE this run's record is persisted"
+
+    def test_warmup_skips_only_15min_when_base5_valid_but_base15_missing(self, mock_env):
+        """When base_5 exists but base_15 is None (only ~10min of records), skip 15min only.
+
+        Scenario: handler has been running for ~10 minutes today — enough for a valid
+        base_5 but not enough history for a 15-minute baseline. The 5min window should
+        be evaluated normally (using delta), while 15min is skipped.
+        """
+        models = {'claude-sonnet-4': {'input': 0, 'output': 2_000_000, 'cache_read': 0, 'cache_write': 0}}
+        mock_env['fetch_region'].return_value = {
+            'region': 'us-east-1', '5min': 2_000_000, '15min': 2_000_000, 'daily': 2_000_000,
+            'models': {'5min': models, '15min': models, 'daily': models},
+        }
+        # Records from the last ~10 minutes — too recent for base_15 (cutoff = now - 15min = 10:02:35)
+        # but base_5 picks the latest valid record (10:12)
+        mock_env['query_by_pk'].return_value = [
+            {'SK': 'T#10:07', 'timestamp': '2026-07-16T10:07:00Z',
+             'complete': True, 'cost_daily': '1.0',
+             'models_daily': {'claude-sonnet-4': {'input': 0, 'output': 100_000, 'cache_read': 0, 'cache_write': 0}}},
+            {'SK': 'T#10:12', 'timestamp': '2026-07-16T10:12:00Z',
+             'complete': True, 'cost_daily': '2.0',
+             'models_daily': {'claude-sonnet-4': {'input': 0, 'output': 200_000, 'cache_read': 0, 'cache_write': 0}}},
+        ]
+
+        from monitor.handler import handler
+        result = handler({}, None)
+
+        # 5min delta = ~$30 - $2 = ~$28 > $5 threshold → fires
+        assert '5min' in result['alerts']
+        # 15min should be skipped (no valid base_15)
+        assert '15min' not in result['alerts']
