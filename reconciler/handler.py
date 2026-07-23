@@ -486,8 +486,10 @@ def _get_ai_summary(report_text, date_str, ai_config):
         # Agent 可能返回 JSON（含 result/text 字段）或纯文本
         try:
             body = json.loads(raw)
+            if isinstance(body, str):
+                return body
             return body.get('result') or body.get('text') or str(body)
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError, AttributeError):
             return raw
     except Exception as e:
         logger.error(f"AI summary failed: {e}")
