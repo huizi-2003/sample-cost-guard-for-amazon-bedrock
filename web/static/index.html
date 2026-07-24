@@ -158,7 +158,7 @@ tr:hover { background: #faf7f4; }
 
 <!-- Tab 3: 实时监控 -->
 <div id="monitor" class="panel">
-  <div style="font-size:12px; color:#999; margin-bottom:8px;">滚动 24 小时窗口 · 时间为 UTC · 每 5 分钟采集</div>
+  <div style="font-size:12px; color:#999; margin-bottom:8px;">滚动 24 小时窗口 · 时间为北京时间 (UTC+8) · 每 5 分钟采集</div>
   <!-- 预估费用卡片 -->
   <div id="cost-cards" class="summary" style="display:none;">
     <div class="summary-card"><div class="value" id="cost-total">-</div><div class="label">24h 预估费用</div></div>
@@ -342,6 +342,23 @@ tr:hover { background: #faf7f4; }
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
 const API = window.location.pathname.replace(/\/$/, '');
+
+// UTC 时间字符串 "MM/DD HH:MM" 转北京时间 (UTC+8)
+function utcToBJ(timeStr) {
+  // timeStr 格式: "07/24 01:05"
+  const parts = timeStr.match(/(\d{2})\/(\d{2}) (\d{2}):(\d{2})/);
+  if (!parts) return timeStr;
+  let month = parseInt(parts[1]), day = parseInt(parts[2]);
+  let hour = parseInt(parts[3]), min = parseInt(parts[4]);
+  hour += 8;
+  if (hour >= 24) { hour -= 24; day += 1; }
+  // 简单处理月末进位（不需要精确，显示用途）
+  const daysInMonth = [31,28,31,30,31,30,31,31,30,31,30,31];
+  if (day > daysInMonth[month - 1]) { day = 1; month += 1; }
+  if (month > 12) { month = 1; }
+  return String(month).padStart(2,'0') + '/' + String(day).padStart(2,'0') + ' ' + String(hour).padStart(2,'0') + ':' + String(min).padStart(2,'0');
+}
+
 const COLORS = [
   'rgba(192,120,48,0.75)', 'rgba(196,68,42,0.75)', 'rgba(45,134,89,0.75)',
   'rgba(181,101,29,0.75)', 'rgba(107,64,142,0.75)', 'rgba(58,135,173,0.75)',
@@ -892,7 +909,7 @@ async function loadTodayCost() {
 
 function renderCostTrend(timeline) {
   const canvas = document.getElementById('cost-trend-chart');
-  const labels = timeline.map(p => p.time);
+  const labels = timeline.map(p => utcToBJ(p.time));
   const values = timeline.map(p => p.cost);
 
   const cfg = {
@@ -988,14 +1005,15 @@ function renderModelChart(data) {
   // Collect all time points
   const allTimes = new Set();
   modelTotals.forEach(m => m.series.forEach(p => allTimes.add(p.time)));
-  const labels = [...allTimes].sort();
+  const sortedTimes = [...allTimes].sort();
+  const labels = sortedTimes.map(t => utcToBJ(t));
 
   // Convert cumulative to deltas
   function toDeltas(series) {
     const timeMap = {};
     series.forEach(p => { timeMap[p.time] = p.tokens; });
     let prev = 0;
-    return labels.map(t => {
+    return sortedTimes.map(t => {
       const cur = timeMap[t] !== undefined ? timeMap[t] : prev;
       const delta = cur - prev;
       prev = cur;
