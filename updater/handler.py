@@ -360,6 +360,25 @@ def _no_changes(desc):
     return "didn't contain changes" in reason or 'no updates are to be performed' in reason
 
 
+def _collect_changes(cfn, stack_name, cs_name):
+    """取变更集的所有分页条目。
+
+    DescribeChangeSet 是分页 API，Changes 超过一页时只返回第一页 + NextToken。
+    check_changeset_safety 是有状态资源的唯一防线，必须看到完整清单——
+    被分页截断的 "ConfigTable Remove" 会被静默放行，那是自动回滚救不回来的。
+    """
+    changes, token = [], None
+    while True:
+        kwargs = {'StackName': stack_name, 'ChangeSetName': cs_name}
+        if token:
+            kwargs['NextToken'] = token
+        resp = cfn.describe_change_set(**kwargs)
+        changes.extend(resp.get('Changes') or [])
+        token = resp.get('NextToken')
+        if not token:
+            return changes
+
+
 # ===== 健康检查 =====
 
 def _health_event():
@@ -486,7 +505,7 @@ def _apply_revision(cfn, s3, stack_name, owner, repo, bucket, region,
             return False, {'no_changes': True}
         return False, {'error': f'变更集创建失败({status}): {desc.get("StatusReason", "")}'}
 
-    safe, reasons = check_changeset_safety(desc.get('Changes') or [])
+    safe, reasons = check_changeset_safety(_collect_changes(cfn, stack_name, cs_name))
     if not safe:
         _delete_changeset(cfn, stack_name, cs_name)
         return False, {'blocked_reasons': reasons}

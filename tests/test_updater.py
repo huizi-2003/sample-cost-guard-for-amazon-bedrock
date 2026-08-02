@@ -125,6 +125,34 @@ class TestChangesetSafety:
     def test_empty_changeset_is_safe(self):
         assert up.check_changeset_safety([]) == (True, [])
 
+    def test_collect_changes_reads_all_pages(self):
+        """有状态资源的破坏性变更在第二页时也必须被拦下。"""
+        mock_cfn = MagicMock()
+        page1 = {
+            'Changes': [{'ResourceChange': {
+                'LogicalResourceId': 'WebFunction',
+                'ResourceType': 'AWS::Lambda::Function',
+                'Action': 'Modify', 'Replacement': 'False'}}],
+            'NextToken': 'page-2',
+        }
+        page2 = {
+            'Changes': [{'ResourceChange': {
+                'LogicalResourceId': 'ConfigTable',
+                'ResourceType': 'AWS::DynamoDB::Table',
+                'Action': 'Remove'}}],
+        }
+        mock_cfn.describe_change_set.side_effect = [page1, page2]
+
+        changes = up._collect_changes(mock_cfn, 'stack', 'cs-name')
+        safe, reasons = up.check_changeset_safety(changes)
+
+        assert len(changes) == 2
+        assert not safe
+        assert any('ConfigTable' in r for r in reasons)
+        # 第二次调用必须带上 NextToken
+        call_kwargs = mock_cfn.describe_change_set.call_args_list[1][1]
+        assert call_kwargs['NextToken'] == 'page-2'
+
 
 # ===== 方向判定 =====
 
