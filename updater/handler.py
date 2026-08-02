@@ -527,7 +527,12 @@ def _finish(cfn, lambda_client, stack_name, upgrade_id, ctx_info, context):
 
     # --- CloudFormation 层面失败：它已经自动回滚，代码仍是旧版本 ---
     if status not in _TERMINAL_OK:
-        msg = f'CloudFormation 更新失败，状态 {status}（已自动回滚到升级前的版本）'
+        rolled_back = status == 'UPDATE_ROLLBACK_COMPLETE'
+        if rolled_back:
+            msg = f'CloudFormation 更新失败，状态 {status}（已自动回滚到升级前的版本）'
+        else:
+            msg = (f'CloudFormation 更新失败，状态 {status}（回滚未完成，'
+                   f'需要在 CloudFormation 控制台执行 continue-update-rollback）')
         final = STATUS_ROLLBACK_FAILED if is_rollback else STATUS_FAILED
         record_history(upgrade_id, status=final, error=msg, finished_at=_iso(),
                        **_hist_base(ctx_info))

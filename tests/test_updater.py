@@ -461,6 +461,28 @@ class TestAutoRollback:
     @patch('updater.handler.notify')
     @patch('updater.handler.record_history')
     @patch('updater.handler.save_config')
+    @patch('updater.handler.health_check', return_value=(False, 'irrelevant'))
+    def test_cfn_rollback_failed_mentions_manual_recovery(self, mock_health, mock_save,
+                                                          mock_hist, mock_notify):
+        """UPDATE_ROLLBACK_FAILED → 文案应提示手动 continue-update-rollback。"""
+        mock_cfn = MagicMock()
+        mock_cfn.describe_stacks.return_value = {
+            'Stacks': [_stack('UPDATE_ROLLBACK_FAILED')]}
+        ctx_info = {'target_sha': 'newsha', 'target_tag': 'v2', 'from_sha': 'oldsha',
+                    'owner': 'o', 'repo': 'r', 'bucket': 'b', 'region': 'us-east-1',
+                    'role_arn': 'arn', 'is_rollback': False, 'hop': 0}
+
+        result = up._finish(mock_cfn, MagicMock(), 'stack', 'id1', ctx_info, _ctx())
+
+        assert result['status'] == up.STATUS_FAILED
+        assert 'continue-update-rollback' in result['error']
+        assert 'continue-update-rollback' in mock_save.call_args.kwargs.get('last_error', '')
+        mock_notify.assert_called_once()
+
+    @patch.dict(os.environ, ENV)
+    @patch('updater.handler.notify')
+    @patch('updater.handler.record_history')
+    @patch('updater.handler.save_config')
     @patch('updater.handler.get_config', return_value=dict(BASE_CFG, last_known_good_sha='oldsha'))
     @patch('updater.handler._self_invoke')
     @patch('updater.handler.health_check', return_value=(False, 'ImportError'))
