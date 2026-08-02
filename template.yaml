@@ -68,6 +68,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
+                  - s3:GetObject
                   - s3:PutObject
                   - s3:DeleteObject
                   - s3:DeleteObjectVersion
@@ -95,7 +96,7 @@ Resources:
       MemorySize: 1024    # zip 全部在内存 BytesIO 里构建，且内存越大 CPU 越快
       Code:
         ZipFile: |
-          import urllib.request, urllib.error, boto3, zipfile, io, subprocess, tempfile, os, json, datetime, re
+          import urllib.request, urllib.error, boto3, zipfile, io, subprocess, tempfile, os, json, datetime, re, hashlib
           GH_API = 'https://api.github.com'
           SHA_RE = re.compile(r'^[0-9a-f]{7,40}$')
           def _api(url, sha=False):
@@ -222,47 +223,84 @@ Resources:
                   buf2.seek(0)
                   resp2 = s3.put_object(Bucket=p['Bucket'], Key='web.zip', Body=buf2.read())
 
-                  # Build agent.zip (agent/ code for AgentCore Runtime)
-                  # AgentCore 直接代码部署不会自动装依赖，必须把 arm64 wheel 打进 zip
-                  # （Runtime 为 PYTHON_3_13 / arm64，--only-binary 确保只拉预编译 wheel）
-                  tmpdir2 = tempfile.mkdtemp()
+                  # ---- agent 指纹：只对仓库里的 agent/ 源文件算，不含 pip 产物 ----
+                  agent_src = {}
                   for name in src.namelist():
                       if name.endswith('/'):
                           continue
                       parts = name.split('/', 1)
                       inner = parts[1] if len(parts) > 1 else parts[0]
                       if inner and inner.startswith('agent/'):
-                          # Flatten: agent/main.py → main.py (AgentCore expects entrypoint at root)
-                          flat_name = inner[len('agent/'):]
-                          if flat_name:
-                              dest = os.path.join(tmpdir2, flat_name)
-                              os.makedirs(os.path.dirname(dest), exist_ok=True)
-                              with open(dest, 'wb') as f:
-                                  f.write(src.read(name))
-                  subprocess.check_call([
-                      'pip', 'install',
-                      '--platform', 'manylinux2014_aarch64',
-                      '--implementation', 'cp',
-                      '--python-version', '3.13',
-                      '--only-binary=:all:',
-                      '--no-compile',
-                      '-r', os.path.join(tmpdir2, 'requirements.txt'),
-                      '-t', tmpdir2, '--quiet'
-                  ])
-                  buf3 = io.BytesIO()
-                  with zipfile.ZipFile(buf3, 'w', zipfile.ZIP_DEFLATED) as out:
-                      for root, dirs, files in os.walk(tmpdir2):
-                          for f in files:
-                              full = os.path.join(root, f)
-                              arcname = os.path.relpath(full, tmpdir2)
-                              out.write(full, arcname)
-                  buf3.seek(0)
-                  resp3 = s3.put_object(Bucket=p['Bucket'], Key='agent.zip', Body=buf3.read())
+                          agent_src[inner] = src.read(name)
+                  h = hashlib.sha256()
+                  for k in sorted(agent_src):
+                      h.update(k.encode())
+                      h.update(hashlib.sha256(agent_src[k]).digest())
+                  agent_hash = h.hexdigest()
+
+                  MARKER = 'agent-artifact.json'
+                  prev = None
+                  try:
+                      prev = json.loads(s3.get_object(Bucket=p['Bucket'], Key=MARKER)['Body'].read())
+                  except Exception:
+                      pass
+
+                  if prev is None:
+                      vs = [v for v in s3.list_object_versions(
+                                Bucket=p['Bucket'], Prefix='agent.zip').get('Versions', [])
+                            if v['Key'] == 'agent.zip']
+                      if vs:
+                          prev = {'hash': agent_hash,
+                                  'version_id': min(vs, key=lambda v: v['LastModified'])['VersionId']}
+                          s3.put_object(Bucket=p['Bucket'], Key=MARKER, Body=json.dumps(prev).encode())
+                          print('adopted existing agent.zip as baseline: %s' % prev['version_id'])
+
+                  if prev and prev.get('hash') == agent_hash and prev.get('version_id'):
+                      agent_version_id = prev['version_id']
+                      print('agent unchanged, reuse s3 version %s' % agent_version_id)
+                  else:
+                      # agent 真变了：构建 + 上传
+                      tmpdir2 = tempfile.mkdtemp()
+                      for name in src.namelist():
+                          if name.endswith('/'):
+                              continue
+                          parts = name.split('/', 1)
+                          inner = parts[1] if len(parts) > 1 else parts[0]
+                          if inner and inner.startswith('agent/'):
+                              flat_name = inner[len('agent/'):]
+                              if flat_name:
+                                  dest = os.path.join(tmpdir2, flat_name)
+                                  os.makedirs(os.path.dirname(dest), exist_ok=True)
+                                  with open(dest, 'wb') as f:
+                                      f.write(src.read(name))
+                      subprocess.check_call([
+                          'pip', 'install',
+                          '--platform', 'manylinux2014_aarch64',
+                          '--implementation', 'cp',
+                          '--python-version', '3.13',
+                          '--only-binary=:all:',
+                          '--no-compile',
+                          '-r', os.path.join(tmpdir2, 'requirements.txt'),
+                          '-t', tmpdir2, '--quiet'
+                      ])
+                      buf3 = io.BytesIO()
+                      with zipfile.ZipFile(buf3, 'w', zipfile.ZIP_DEFLATED) as out:
+                          for root, dirs, files in os.walk(tmpdir2):
+                              for f in files:
+                                  full = os.path.join(root, f)
+                                  arcname = os.path.relpath(full, tmpdir2)
+                                  out.write(full, arcname)
+                      buf3.seek(0)
+                      resp3 = s3.put_object(Bucket=p['Bucket'], Key='agent.zip', Body=buf3.read())
+                      agent_version_id = resp3.get('VersionId', 'null')
+                      s3.put_object(Bucket=p['Bucket'], Key=MARKER,
+                                    Body=json.dumps({'hash': agent_hash,
+                                                    'version_id': agent_version_id}).encode())
 
                   _send(event, context, 'SUCCESS', {
                       'LambdaVersionId': resp1.get('VersionId', 'null'),
                       'WebVersionId': resp2.get('VersionId', 'null'),
-                      'AgentVersionId': resp3.get('VersionId', 'null'),
+                      'AgentVersionId': agent_version_id,
                       'CommitSha': sha,
                       'ReleaseTag': tag,
                   })
