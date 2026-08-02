@@ -27,7 +27,8 @@
     应用级健康检查（调 Web Lambda /api/health）
         ↓
     通过 → 记录 last_known_good_sha
-    失败 → 自动回退到 last_known_good_sha 并通知
+    失败 → 异步触发 action=rollback，在新的时间预算里回退到
+           last_known_good_sha 并通知
 """
 import json
 import logging
@@ -37,6 +38,7 @@ import time
 from datetime import datetime, timezone
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -45,6 +47,7 @@ from common.config import (
     get_auto_upgrade_config as get_config,
     get_upgrade_history as get_history,
     get_webhook_config,
+    merge_upgrade_record as merge_history,
     record_upgrade as record_history,
     save_auto_upgrade_config as save_config,
 )
@@ -80,8 +83,40 @@ _TERMINAL_OK = ('CREATE_COMPLETE', 'UPDATE_COMPLETE', 'IMPORT_COMPLETE')
 # 异步调用自己继续观察。8 跳约 2 小时，足够覆盖最慢的情况。
 MAX_WATCH_HOPS = 8
 
-# 留给收尾（健康检查、写 DDB、发通知）的时间
+# 留给收尾（健康检查、写 DDB、发通知、一次异步自调用）的时间。
+# 回退不在这个预算里——它自己占一整跳，见 _finish 的健康检查失败分支。
 _RESERVE_MS = 90_000
+
+# 健康检查单次尝试的最坏耗时：connect(5) + read(20) + 重试间隔(10)。
+_HEALTH_ATTEMPT_MS = 35_000
+
+# 健康检查放弃重试后必须留下的收尾时间：写 DDB + 发通知 + 一次异步 invoke。
+_FINISH_TAIL_MS = 20_000
+
+# Lambda invoke 用短超时且不重试。健康检查和自调用都跑在收尾预算里，
+# 在这里"挂住"比"失败"更危险：失败还能触发回退，挂住会把整个函数拖到
+# Lambda 超时被掐死——那时不会抛出可捕获的异常，兜底清理也跑不到。
+# max_attempts=1 + mode=standard 显式表示"总共尝试一次"，避开 legacy 模式下
+# max_attempts 到底是"重试次数"还是"总次数"的歧义。
+_INVOKE_CFG = Config(connect_timeout=5, read_timeout=20,
+                     retries={'max_attempts': 1, 'mode': 'standard'})
+
+# CloudFormation / S3 的取舍相反：describe_* 跑在轮询循环里，一次整栈更新要
+# 打几十次，需要的是抗限流而不是快速失败。
+_STACK_CFG = Config(connect_timeout=10, read_timeout=30,
+                    retries={'max_attempts': 10, 'mode': 'adaptive'})
+
+
+def _cfn_client():
+    return boto3.client('cloudformation', config=_STACK_CFG)
+
+
+def _s3_client():
+    return boto3.client('s3', config=_STACK_CFG)
+
+
+def _lambda_client():
+    return boto3.client('lambda', config=_INVOKE_CFG)
 
 
 def _now():
@@ -278,17 +313,30 @@ def _health_event():
     }
 
 
-def health_check(lambda_client, function_name, retries=3, delay=10):
+def health_check(lambda_client, function_name, context=None, retries=3, delay=10):
     """升级完成后验证 Web Lambda 能正常起来。
 
     CloudFormation 只保证"基础设施更新成功"。如果新代码有导入错误或运行时
     bug，栈状态依然是 UPDATE_COMPLETE，而用户面对的是一个白屏控制台。
     这一步就是为了把这种情况变成可自动恢复的。
 
+    每次尝试前都检查剩余时间（包括第一次）：新版本 Web Lambda 如果是"挂住"
+    而不是"快速报错"，单次 invoke 最坏要 connect+read 秒，三次加重试间隔足以
+    超出收尾预算，把 updater 自己拖到超时被掐——那时既没记录也没回退。
+    预算不足时返回失败，但 detail 里注明原因，便于事后区分"新版本真的坏了"
+    和"没来得及查"。
+
     返回 (ok: bool, detail: str)
     """
+    budget_ms = _HEALTH_ATTEMPT_MS + _FINISH_TAIL_MS
     last_detail = ''
     for attempt in range(1, retries + 1):
+        remaining = context.get_remaining_time_in_millis() if context else None
+        if remaining is not None and remaining < budget_ms:
+            give_up = (f'预算不足放弃重试（剩余 {remaining // 1000}s，'
+                       f'第 {attempt}/{retries} 次未执行）')
+            logger.warning(f'健康检查{give_up}')
+            return False, f'{last_detail}；{give_up}' if last_detail else give_up
         try:
             resp = lambda_client.invoke(
                 FunctionName=function_name,
@@ -415,7 +463,7 @@ def _finish(cfn, lambda_client, stack_name, upgrade_id, ctx_info, context):
     web_fn = _env('WEB_FUNCTION_NAME')
     ok, detail = (True, 'skipped')
     if web_fn:
-        ok, detail = health_check(lambda_client, web_fn)
+        ok, detail = health_check(lambda_client, web_fn, context)
 
     if ok:
         final = STATUS_ROLLED_BACK if is_rollback else STATUS_SUCCESS
@@ -442,42 +490,48 @@ def _finish(cfn, lambda_client, stack_name, upgrade_id, ctx_info, context):
     msg = f'升级后健康检查失败：{detail}'
     logger.error(msg)
 
+    record_history(upgrade_id, status=STATUS_FAILED, error=msg, finished_at=_iso(),
+                   **_hist_base(ctx_info))
+
     if not good_sha:
-        record_history(upgrade_id, status=STATUS_FAILED,
-                       error=f'{msg}（无可用回退版本）', finished_at=_iso(),
-                       **_hist_base(ctx_info))
-        save_config(last_status=STATUS_FAILED, last_error=msg, current_upgrade_id='')
+        # last_error 是前端唯一会显示的字段，得把"为什么没自动回退"带上
+        no_rb = f'{msg}（无可用回退版本，需要人工升级或回退）'
+        save_config(last_status=STATUS_FAILED, last_error=no_rb, current_upgrade_id='')
         notify(f'🚨 Bedrock Cost Guard 升级后健康检查失败，且没有可回退的版本\n{msg}')
-        return {'status': STATUS_FAILED, 'error': msg}
+        return {'status': STATUS_FAILED, 'error': no_rb}
 
-    notify(f'⚠️ Bedrock Cost Guard 升级后健康检查失败，正在自动回退\n'
-           f'失败版本：{target_tag or target_sha[:7]}\n回退到：{good_sha[:7]}\n{detail}')
-
-    s3 = boto3.client('s3')
+    # --- 回退：独占一跳，不在当前收尾预算里做 ---
+    # 走到这里时剩余时间刚过 _RESERVE_MS（约 90 秒），而回退要下载模板、
+    # 上传 S3、建变更集、等变更集就绪（_wait_changeset_ready 自带 300 秒上限
+    # 且不感知 context），90 秒内大概率跑不完。就地做会被掐在"变更集已创建
+    # 甚至已执行、但没人观察"的中间态。所以先把状态落库再异步触发，让回退
+    # 在一个全新的 15 分钟预算里跑。
     rb_id = _iso()
     rb_ctx = {
         'target_sha': good_sha, 'target_tag': '', 'from_sha': target_sha,
-        'owner': ctx_info['owner'], 'repo': ctx_info['repo'],
-        'bucket': ctx_info['bucket'], 'region': ctx_info['region'],
-        'role_arn': ctx_info.get('role_arn', ''), 'is_rollback': True, 'hop': 0,
+        'is_rollback': True, 'hop': 0,
     }
-    ok2, info = _apply_revision(
-        cfn, s3, stack_name, ctx_info['owner'], ctx_info['repo'],
-        ctx_info['bucket'], ctx_info['region'], good_sha,
-        ctx_info.get('role_arn', ''), f'auto rollback from {target_sha[:12]}')
+    record_history(rb_id, status=STATUS_UPDATING, started_at=rb_id,
+                   from_sha=target_sha, to_sha=good_sha, to_tag='', is_rollback='true')
+    # 先落状态再自调用：自调用本身也可能丢（invoke 报错、Lambda 被掐）。
+    # 留下 rb_id + UPDATING，配合 current_upgrade_id 的失效判定才能恢复。
+    save_config(last_status=STATUS_UPDATING, last_error=msg, current_upgrade_id=rb_id)
+    notify(f'⚠️ Bedrock Cost Guard 升级后健康检查失败，正在自动回退\n'
+           f'失败版本：{target_tag or target_sha[:7]}\n回退到：{good_sha[:7]}\n{detail}')
 
-    record_history(upgrade_id, status=STATUS_FAILED, error=msg, finished_at=_iso(),
-                   **_hist_base(ctx_info))
-    if not ok2:
-        err = info.get('error') or f'被安全策略阻断: {info.get("blocked_reasons")}'
+    try:
+        _self_invoke({'action': 'rollback', 'upgrade_id': rb_id, 'ctx': rb_ctx})
+    except Exception as e:  # noqa: BLE001 - 触发失败必须让人知道
+        err = f'触发自动回退失败: {e}'
+        logger.error(err)
+        record_history(rb_id, status=STATUS_ROLLBACK_FAILED, error=err,
+                       finished_at=_iso(), from_sha=target_sha, to_sha=good_sha,
+                       to_tag='', is_rollback='true')
         save_config(last_status=STATUS_ROLLBACK_FAILED, last_error=err, current_upgrade_id='')
-        notify(f'🚨 Bedrock Cost Guard 自动回退失败，请人工介入\n{err}')
+        notify(f'🚨 Bedrock Cost Guard 自动回退没能启动，请人工介入\n{err}')
         return {'status': STATUS_ROLLBACK_FAILED, 'error': err}
 
-    record_history(rb_id, status=STATUS_UPDATING, started_at=_iso(),
-                   from_sha=target_sha, to_sha=good_sha, to_tag='', is_rollback='true')
-    save_config(last_status=STATUS_UPDATING, current_upgrade_id=rb_id)
-    return _finish(cfn, lambda_client, stack_name, rb_id, rb_ctx, context)
+    return {'status': STATUS_UPDATING, 'rollback_id': rb_id}
 
 
 def _hist_base(ctx_info):
@@ -495,9 +549,32 @@ def _self_invoke(payload):
     if not fn:
         logger.warning('无 AWS_LAMBDA_FUNCTION_NAME，跳过自调用')
         return
-    boto3.client('lambda').invoke(
+    # 短超时 client：这次 invoke 跑在收尾预算里，挂住同样会把函数拖到超时。
+    _lambda_client().invoke(
         FunctionName=fn, InvocationType='Event',
         Payload=json.dumps(payload).encode('utf-8'))
+
+
+def _ctx_from_env(raw):
+    """重建续跑/回退的上下文：基础设施参数一律取环境变量，不信 event。
+
+    watch 和 rollback 都由异步自调用触发，而 Lambda 的调用入口不止自己一个。
+    owner / repo / bucket / role_arn 决定了"从哪拉代码、用什么权限改栈"，
+    这些必须来自模板注入的环境变量；event 里只保留每次升级独有的版本信息，
+    它们本身不扩大权限（target_sha 仍要过 compare / 安全检查 / 健康检查）。
+    """
+    return {
+        'target_sha': raw.get('target_sha', ''),
+        'target_tag': raw.get('target_tag', ''),
+        'from_sha': raw.get('from_sha', ''),
+        'is_rollback': bool(raw.get('is_rollback')),
+        'hop': raw.get('hop', 0),
+        'owner': _env('GITHUB_OWNER'),
+        'repo': _env('GITHUB_REPO'),
+        'bucket': _env('CODE_BUCKET'),
+        'region': _env('AWS_REGION', 'us-east-1'),
+        'role_arn': _env('STACK_UPDATE_ROLE_ARN'),
+    }
 
 
 # ===== 主流程 =====
@@ -518,9 +595,9 @@ def check_and_upgrade(event, context):
         save_config(last_check_at=now_iso, last_status=STATUS_SKIPPED, last_error='')
         return {'status': STATUS_SKIPPED, 'reason': '自动升级已关闭'}
 
-    cfn = boto3.client('cloudformation')
-    lambda_client = boto3.client('lambda')
-    s3 = boto3.client('s3')
+    cfn = _cfn_client()
+    lambda_client = _lambda_client()
+    s3 = _s3_client()
 
     # 栈正在变更时不叠加新的升级
     status, stack = _stack_status(cfn, stack_name)
@@ -626,11 +703,83 @@ def check_and_upgrade(event, context):
 
 def watch(event, context):
     """续跑：继续观察一次已经在执行中的栈更新。"""
-    ctx_info = event.get('ctx') or {}
+    ctx_info = _ctx_from_env(event.get('ctx') or {})
     ctx_info['hop'] = event.get('hop', 0)
     upgrade_id = event.get('upgrade_id') or _iso()
-    return _finish(boto3.client('cloudformation'), boto3.client('lambda'),
-                   _env('STACK_NAME'), upgrade_id, ctx_info, context)
+    return _finish(_cfn_client(), _lambda_client(), _env('STACK_NAME'),
+                   upgrade_id, ctx_info, context)
+
+
+def rollback(event, context):
+    """执行一次回退，独占一个完整的 Lambda 时间预算。
+
+    由 _finish 的健康检查失败分支异步触发。拆出来是因为回退本身就是一次
+    完整的整栈更新（下载模板 + 建变更集 + 等就绪 + 执行 + 观察），塞不进
+    上一跳剩下的那点收尾时间。状态在触发前已经落库，这里只管执行。
+    """
+    ctx_info = _ctx_from_env(event.get('ctx') or {})
+    ctx_info['is_rollback'] = True
+    upgrade_id = event.get('upgrade_id') or _iso()
+    stack_name = _env('STACK_NAME')
+    good_sha = ctx_info['target_sha']
+
+    def _fail(err):
+        logger.error(err)
+        merge_history(upgrade_id, status=STATUS_ROLLBACK_FAILED, error=err,
+                      finished_at=_iso())
+        save_config(last_status=STATUS_ROLLBACK_FAILED, last_error=err, current_upgrade_id='')
+        notify(f'🚨 Bedrock Cost Guard 自动回退失败，请人工介入\n{err}')
+        return {'status': STATUS_ROLLBACK_FAILED, 'error': err}
+
+    if not good_sha:
+        return _fail('回退请求缺少目标版本（target_sha 为空）')
+
+    cfn = _cfn_client()
+    # 上一跳的栈更新已经到终态才会走到回退，但异步调用可能重复投递，
+    # 这里再确认一次，避免在 CloudFormation 已经忙起来时叠加变更集。
+    status, _ = _stack_status(cfn, stack_name)
+    if _is_busy(status):
+        return _fail(f'栈当前状态 {status}，无法执行回退')
+
+    ok, info = _apply_revision(cfn, _s3_client(), stack_name, ctx_info['owner'],
+                               ctx_info['repo'], ctx_info['bucket'], ctx_info['region'],
+                               good_sha, ctx_info['role_arn'],
+                               f'auto rollback to {good_sha[:12]}')
+    if not ok:
+        if info.get('no_changes'):
+            return _fail('回退变更集为空：栈已经是该版本，但健康检查仍失败，'
+                         '说明问题不在代码版本上')
+        if info.get('blocked_reasons'):
+            return _fail(f'回退被安全策略阻断: {"; ".join(info["blocked_reasons"])}')
+        return _fail(info.get('error', '未知错误'))
+
+    return _finish(cfn, _lambda_client(), stack_name, upgrade_id, ctx_info, context)
+
+
+def _release_lock(action, exc):
+    """未捕获异常时释放升级锁并告警。
+
+    没有这一步，current_upgrade_id 会永远留在 DDB：「立即升级」永久 409，
+    前端还一直显示"正在更新"（失败原因只在 in_progress 为假时才渲染），
+    对用户就是"按钮坏了且看不到原因"。
+
+    清理动作自身全部包在 try 里——清理失败不能盖掉原始异常，那才是根因。
+    注意这里救不了 Lambda 超时被掐（运行时直接终止，不走 except），
+    那种情况靠 common.config 里 current_upgrade_id 的失效判定兜底。
+    """
+    try:
+        msg = f'升级流程异常中断（action={action}）: {exc}'
+        logger.exception(msg)
+        upgrade_id = get_config().get('current_upgrade_id') or ''
+        if upgrade_id:
+            # merge 而非覆盖：record_upgrade 是整条 put，直接写会把 changelog、
+            # from_sha 等诊断信息抹掉。
+            merge_history(upgrade_id, status=STATUS_FAILED, error=msg, finished_at=_iso())
+        save_config(last_status=STATUS_FAILED, last_error=msg, current_upgrade_id='')
+        notify(f'⚠️ Bedrock Cost Guard 自动升级异常中断\n{msg}\n'
+               f'请在 CloudFormation 控制台确认栈状态。')
+    except Exception as e:  # noqa: BLE001 - 原始异常优先
+        logger.error(f'异常兜底清理自身失败（原始异常仍会抛出）: {e}')
 
 
 def handler(event, context):
@@ -638,8 +787,17 @@ def handler(event, context):
     action = event.get('action') or 'check'
     logger.info(f'updater action={action}')
 
-    if action == 'watch':
-        return watch(event, context)
-    if action in ('check', 'upgrade_now'):
-        return check_and_upgrade(event, context)
-    return {'status': 'IGNORED', 'reason': f'未知 action: {action}'}
+    try:
+        if action == 'watch':
+            return watch(event, context)
+        if action == 'rollback':
+            return rollback(event, context)
+        if action in ('check', 'upgrade_now'):
+            return check_and_upgrade(event, context)
+        return {'status': 'IGNORED', 'reason': f'未知 action: {action}'}
+    except Exception as exc:  # noqa: BLE001
+        _release_lock(action, exc)
+        # 继续抛出：保留 CloudWatch 的 Errors 指标和完整堆栈。
+        # 异步重试已在模板里关掉（EventInvokeConfig MaximumRetryAttempts: 0），
+        # 否则一次崩溃会重复走三遍兜底、发三条相同的告警。
+        raise

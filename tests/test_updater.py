@@ -462,17 +462,17 @@ class TestAutoRollback:
     @patch('updater.handler.record_history')
     @patch('updater.handler.save_config')
     @patch('updater.handler.get_config', return_value=dict(BASE_CFG, last_known_good_sha='oldsha'))
-    @patch('updater.handler._apply_revision')
-    @patch('updater.handler.boto3.client')
-    @patch('updater.handler.health_check')
-    def test_health_failure_triggers_rollback(self, mock_health, mock_boto, mock_apply,
-                                             mock_cfg, mock_save, mock_hist, mock_notify):
-        """CFn 报成功但应用是坏的 → 自动回退到 from_sha。"""
-        # 第一次健康检查失败（新版本坏），回退后第二次通过
-        mock_health.side_effect = [(False, 'ImportError'), (True, 'ok')]
+    @patch('updater.handler._self_invoke')
+    @patch('updater.handler.health_check', return_value=(False, 'ImportError'))
+    def test_health_failure_hands_rollback_to_new_hop(self, mock_health, mock_self, mock_cfg,
+                                                      mock_save, mock_hist, mock_notify):
+        """CFn 报成功但应用是坏的 → 异步触发 rollback，不在收尾预算里就地回退。
+
+        走到这里时只剩 _RESERVE_MS（90 秒）左右，而回退要下载模板、建变更集、
+        等变更集就绪（自带 300 秒上限），就地做会被掐在中间态。
+        """
         mock_cfn = MagicMock()
         mock_cfn.describe_stacks.return_value = {'Stacks': [_stack('UPDATE_COMPLETE')]}
-        mock_apply.return_value = (True, {'changeset_name': 'cs-rollback'})
 
         ctx_info = {'target_sha': 'badsha', 'target_tag': 'v2', 'from_sha': 'oldsha',
                     'owner': 'o', 'repo': 'r', 'bucket': 'b', 'region': 'us-east-1',
@@ -480,10 +480,52 @@ class TestAutoRollback:
 
         result = up._finish(mock_cfn, MagicMock(), 'stack', 'id1', ctx_info, _ctx())
 
-        assert result['status'] == up.STATUS_ROLLED_BACK
+        assert result['status'] == up.STATUS_UPDATING
+        rb_id = result['rollback_id']
+
+        payload = mock_self.call_args[0][0]
+        assert payload['action'] == 'rollback'
+        assert payload['upgrade_id'] == rb_id
         # 回退目标必须是升级前的版本
-        assert mock_apply.call_args[0][7] == 'oldsha'
+        assert payload['ctx']['target_sha'] == 'oldsha'
+        assert payload['ctx']['is_rollback'] is True
+
+        # 状态必须在自调用之前落库：自调用本身也可能丢，
+        # DDB 里得留下 rb_id 才能靠失效判定恢复
+        assert mock_save.call_args.kwargs['current_upgrade_id'] == rb_id
         assert mock_notify.call_count >= 1
+
+    @patch.dict(os.environ, ENV)
+    @patch('updater.handler.notify')
+    @patch('updater.handler.record_history')
+    @patch('updater.handler.save_config')
+    @patch('updater.handler.get_config', return_value=dict(BASE_CFG, last_known_good_sha='oldsha'))
+    @patch('updater.handler._apply_revision', return_value=(True, {'changeset_name': 'cs-rb'}))
+    @patch('updater.handler.boto3.client')
+    @patch('updater.handler.health_check', return_value=(True, 'ok'))
+    def test_rollback_action_applies_good_sha(self, mock_health, mock_boto, mock_apply,
+                                              mock_cfg, mock_save, mock_hist, mock_notify):
+        """rollback 这一跳把栈更新回 good_sha，健康检查通过后记为 ROLLED_BACK。"""
+        mock_cfn = MagicMock()
+        mock_cfn.describe_stacks.return_value = {'Stacks': [_stack('UPDATE_COMPLETE')]}
+        mock_boto.return_value = mock_cfn
+
+        # ctx 里塞入恶意的基础设施参数：它们必须被环境变量盖掉，
+        # 否则异步事件就成了"从哪拉代码、用什么权限改栈"的注入点。
+        event = {'action': 'rollback', 'upgrade_id': 'rb1', 'ctx': {
+            'target_sha': 'oldsha', 'from_sha': 'badsha', 'is_rollback': True, 'hop': 0,
+            'owner': 'attacker', 'repo': 'evil', 'bucket': 'evil-bucket',
+            'role_arn': 'arn:aws:iam::999:role/admin',
+        }}
+        result = up.rollback(event, _ctx())
+
+        assert result['status'] == up.STATUS_ROLLED_BACK
+        args = mock_apply.call_args[0]
+        # 回退目标必须是升级前的版本
+        assert args[7] == 'oldsha'
+        # 基础设施参数一律来自环境变量，不采信 event
+        assert (args[3], args[4], args[5]) == ('owner', 'repo', 'bucket')
+        assert args[8] == ENV['STACK_UPDATE_ROLE_ARN']
 
     @patch.dict(os.environ, ENV)
     @patch('updater.handler.notify')

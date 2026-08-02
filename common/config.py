@@ -236,6 +236,40 @@ AUTO_UPGRADE_SK = 'auto_upgrade'
 UPGRADE_HISTORY_PK = 'UPGRADE'
 UPGRADE_HISTORY_TTL_DAYS = 365
 
+# current_upgrade_id 这把"升级进行中"的锁多久后视为失效。
+#
+# 为什么必须有失效机制：Updater 被 Lambda 超时掐死时不会抛出可捕获的异常，
+# 它的顶层兜底清理跑不到；而 save_auto_upgrade_config 是合并语义，周检也不会
+# 清这个字段。没有失效判定，一次意外就让「立即升级」永久返回 409、前端永久
+# 显示"正在更新"，用户无法自愈。
+#
+# 阈值取 6 小时：合法最长路径是升级 8 跳 + 回退 8 跳（updater.MAX_WATCH_HOPS
+# × 每跳 15 分钟）≈ 4 小时，留 2 小时余量。
+UPGRADE_LOCK_MAX_AGE_SECONDS = 6 * 3600
+
+
+def _upgrade_lock_active(upgrade_id):
+    """判断"升级进行中"标记是否仍然有效。
+
+    upgrade_id 本身就是 ISO 时间戳（见 updater 的 upgrade_id = now_iso），
+    直接按它判龄即可，不需要新增字段。只在读取时判断、不回写 DDB，保证读
+    路径无副作用。
+
+    解析失败一律视为失效：读不出时间的锁没法判断是否卡死，宁可放开让用户
+    能重试——重试侧还有 CloudFormation 的 _IN_PROGRESS 检查兜着，不会叠加。
+    """
+    if not upgrade_id:
+        return False
+    from datetime import datetime, timezone
+    try:
+        started = datetime.fromisoformat(str(upgrade_id).replace('Z', '+00:00'))
+    except (ValueError, TypeError):
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - started).total_seconds()
+    return age < UPGRADE_LOCK_MAX_AGE_SECONDS
+
 
 def get_auto_upgrade_config():
     """读自动升级配置。
@@ -243,17 +277,20 @@ def get_auto_upgrade_config():
     自动更新默认开启：DDB 无记录即视为开启，用户在页面上关闭后才落库。
     这里不读任何部署参数——开关的唯一真相来源就是 DDB，避免栈参数和页面
     配置各说一套。
+
+    current_upgrade_id 会做失效判定，超龄的锁按空返回（见 _upgrade_lock_active）。
     """
     item = get_item('CONFIG', AUTO_UPGRADE_SK) or {}
     raw = item.get('enabled')
     enabled = True if raw is None else str(raw).lower() == 'true'
+    upgrade_id = item.get('current_upgrade_id') or ''
     return {
         'enabled': enabled,
         'last_check_at': item.get('last_check_at') or '',
         'last_status': item.get('last_status') or '',
         'last_error': item.get('last_error') or '',
         'last_known_good_sha': item.get('last_known_good_sha') or '',
-        'current_upgrade_id': item.get('current_upgrade_id') or '',
+        'current_upgrade_id': upgrade_id if _upgrade_lock_active(upgrade_id) else '',
     }
 
 
@@ -266,11 +303,27 @@ def save_auto_upgrade_config(**attrs):
 
 
 def record_upgrade(upgrade_id, **attrs):
-    """写入一条升级记录（PK=UPGRADE, SK=ISO 时间戳，便于按 PK 查全部历史）。"""
+    """写入一条升级记录（PK=UPGRADE, SK=ISO 时间戳，便于按 PK 查全部历史）。
+
+    整条覆盖。要在已有记录上补字段（例如只更新 status/error）请用
+    merge_upgrade_record，否则 changelog、from_sha 等会被抹掉。
+    """
     from datetime import datetime, timedelta, timezone
     expire_at = int((datetime.now(timezone.utc)
                      + timedelta(days=UPGRADE_HISTORY_TTL_DAYS)).timestamp())
     put_item(UPGRADE_HISTORY_PK, upgrade_id, expire_at=expire_at, **attrs)
+
+
+def merge_upgrade_record(upgrade_id, **attrs):
+    """在已有升级记录上局部更新（record_upgrade 是整条覆盖）。
+
+    用于只知道 upgrade_id、拿不到原始上下文的收尾场景——典型是异常兜底：
+    只想把状态改成 FAILED，但不能把 changelog 和版本信息一起丢掉。
+    """
+    current = get_item(UPGRADE_HISTORY_PK, upgrade_id) or {}
+    merged = {k: v for k, v in current.items() if k not in ('PK', 'SK')}
+    merged.update(attrs)
+    record_upgrade(upgrade_id, **merged)
 
 
 def get_upgrade_history(limit=20):

@@ -763,6 +763,11 @@ Resources:
                   - lambda:UntagResource
                   - lambda:ListTags
                   - lambda:InvokeFunction
+                  # AWS::Lambda::EventInvokeConfig（UpdaterAsyncConfig）需要这三个。
+                  # 缺了会让引入该资源的那次自动升级 AccessDenied 后整栈回滚。
+                  - lambda:GetFunctionEventInvokeConfig
+                  - lambda:PutFunctionEventInvokeConfig
+                  - lambda:DeleteFunctionEventInvokeConfig
                 Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-*"
               # --- DynamoDB（仅本表；删除/替换由 Updater 的安全检查另行拦截）---
               - Effect: Allow
@@ -920,6 +925,20 @@ Resources:
           CODE_BUCKET: !Ref CodeBucket
           STACK_UPDATE_ROLE_ARN: !GetAtt StackUpdateRole.Arn
           WEB_FUNCTION_NAME: !Sub "${AWS::StackName}-web"
+
+  # 异步调用不重试。Updater 的每条失败路径都会写 DDB + 发 webhook，而
+  # handler 的顶层兜底之后仍然 re-raise（为了保留 CloudWatch Errors 指标），
+  # 默认的 2 次重试会把一次崩溃变成三遍兜底、三条相同的告警。
+  # 关掉重试后 re-raise 就是纯收益：指标照常记，通知只发一次。
+  # DependsOn StackUpdateRole：自动升级时是 CloudFormation 扮演该角色执行的，
+  # 得先把 lambda:PutFunctionEventInvokeConfig 加上去，再创建这个资源。
+  UpdaterAsyncConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    DependsOn: StackUpdateRole
+    Properties:
+      FunctionName: !Ref UpdaterFunction
+      Qualifier: "$LATEST"
+      MaximumRetryAttempts: 0
 
   UpdaterSchedule:
     Type: AWS::Events::Rule
