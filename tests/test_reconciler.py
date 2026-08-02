@@ -379,13 +379,14 @@ from reconciler.handler import handler
 
 @patch('reconciler.handler._get_table', new=MagicMock())
 @patch('reconciler.handler.query_by_pk', new=MagicMock(return_value=[]))
+@patch('reconciler.handler.get_account_id', return_value='123456789012')
 @patch('reconciler.handler.send_webhook_all')
 @patch('reconciler.handler.save_reconcile_record')
 @patch('reconciler.handler.get_cloudwatch_token_total', return_value=(0, [], {}))
 @patch('reconciler.handler.get_cost_explorer_data', return_value=[])
 @patch('reconciler.handler.get_webhook_config', return_value=[])
 def test_valid_historical_date_sets_correct_dates(
-    mock_webhook_config, mock_ce, mock_cw, mock_save, mock_send
+    mock_webhook_config, mock_ce, mock_cw, mock_save, mock_send, mock_account_id
 ):
     """**Validates: Requirements 7.1**
 
@@ -394,6 +395,7 @@ def test_valid_historical_date_sets_correct_dates(
     result = handler({'date': '2024-06-15'}, None)
     assert result['statusCode'] == 200
     assert result['date'] == '2024-06-15'
+    mock_account_id.assert_called_once_with()
 
 
 @patch('reconciler.handler._get_table', new=MagicMock())

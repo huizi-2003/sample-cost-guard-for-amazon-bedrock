@@ -785,10 +785,17 @@ def watch(event, context):
     """续跑：继续观察一次已经在执行中的栈更新。"""
     global _OWNED_LOCK_ID
 
+    upgrade_id = event.get('upgrade_id') or ''
+    current = get_config().get('current_upgrade_id') or ''
+    if not upgrade_id or upgrade_id != current:
+        reason = (f'watch 请求与当前升级锁不匹配，忽略'
+                  f'（event={upgrade_id!r}, lock={current!r}）')
+        logger.warning(reason)
+        return {'status': STATUS_IGNORED, 'reason': reason}
+
+    _OWNED_LOCK_ID = upgrade_id
     ctx_info = _ctx_from_env(event.get('ctx') or {})
     ctx_info['hop'] = event.get('hop', 0)
-    upgrade_id = event.get('upgrade_id') or _iso()
-    _OWNED_LOCK_ID = upgrade_id
     return _finish(_cfn_client(), _lambda_client(), _env('STACK_NAME'),
                    upgrade_id, ctx_info, context)
 

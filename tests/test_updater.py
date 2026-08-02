@@ -606,6 +606,69 @@ class TestWatchHops:
         mock_self.assert_not_called()
         mock_notify.assert_called_once()
 
+    @patch.dict(os.environ, ENV)
+    def test_ignores_mismatched_lock_without_writes(self):
+        """伪造 watch 不得执行收尾、写配置或污染升级历史。"""
+        event = {'upgrade_id': 'forged-id', 'ctx': {'target_sha': 'attacker-sha'}}
+        with patch.object(up, '_OWNED_LOCK_ID', None), \
+             patch('updater.handler.get_config', return_value={'current_upgrade_id': 'real-id'}), \
+             patch('updater.handler._finish') as mock_finish, \
+             patch('updater.handler._cfn_client') as mock_cfn, \
+             patch('updater.handler._lambda_client') as mock_lambda, \
+             patch('updater.handler.save_config') as mock_save, \
+             patch('updater.handler.record_history') as mock_history:
+            result = up.watch(event, _ctx())
+
+            assert result['status'] == up.STATUS_IGNORED
+            assert 'forged-id' in result['reason']
+            assert up._OWNED_LOCK_ID is None
+            mock_finish.assert_not_called()
+            mock_cfn.assert_not_called()
+            mock_lambda.assert_not_called()
+            mock_save.assert_not_called()
+            mock_history.assert_not_called()
+
+    @pytest.mark.parametrize('event', [{}, {'upgrade_id': ''}])
+    def test_ignores_missing_or_empty_upgrade_id(self, event):
+        """缺失 ID 不能再由 watch 自动生成，空 ID 也不能匹配空锁。"""
+        with patch.object(up, '_OWNED_LOCK_ID', None), \
+             patch('updater.handler.get_config', return_value={'current_upgrade_id': ''}), \
+             patch('updater.handler._finish') as mock_finish, \
+             patch('updater.handler._cfn_client') as mock_cfn, \
+             patch('updater.handler._lambda_client') as mock_lambda:
+            result = up.watch(event, _ctx())
+
+            assert result['status'] == up.STATUS_IGNORED
+            assert up._OWNED_LOCK_ID is None
+            mock_finish.assert_not_called()
+            mock_cfn.assert_not_called()
+            mock_lambda.assert_not_called()
+
+    @patch.dict(os.environ, ENV)
+    def test_matching_lock_continues_finish(self):
+        """合法 watch 持有当前锁时继续原有 _finish 链路。"""
+        cfn = MagicMock()
+        lambda_client = MagicMock()
+        expected = {'status': up.STATUS_SUCCESS}
+        event = {
+            'upgrade_id': 'upgrade-id',
+            'hop': 2,
+            'ctx': {'target_sha': 'newsha', 'from_sha': 'oldsha'},
+        }
+        with patch.object(up, '_OWNED_LOCK_ID', None), \
+             patch('updater.handler.get_config', return_value={'current_upgrade_id': 'upgrade-id'}), \
+             patch('updater.handler._cfn_client', return_value=cfn), \
+             patch('updater.handler._lambda_client', return_value=lambda_client), \
+             patch('updater.handler._finish', return_value=expected) as mock_finish:
+            result = up.watch(event, _ctx())
+
+            assert result == expected
+            assert up._OWNED_LOCK_ID == 'upgrade-id'
+            args = mock_finish.call_args.args
+            assert args[:4] == (cfn, lambda_client, ENV['STACK_NAME'], 'upgrade-id')
+            assert args[4]['target_sha'] == 'newsha'
+            assert args[4]['hop'] == 2
+
 
 # ===== 事件路由 =====
 
