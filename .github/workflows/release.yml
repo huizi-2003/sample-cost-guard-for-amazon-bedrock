@@ -1,0 +1,78 @@
+name: Release
+
+# 发版流程：
+#   git tag v20260802 && git push origin v20260802
+#         ↓
+#   本工作流：cfn-lint + pytest
+#         ↓ 失败 → 不创建 Release，任何用户都收不到东西
+#         ↓ 通过
+#   创建 draft Release（notes 预填 commit 列表作为草稿）
+#         ↓
+#   维护者把 notes 改写成面向用户的说明，点 Publish
+#         ↓
+#   各部署的栈在下一次每周检查时自动升级
+#
+# 两个关键点：
+#   1. 测试门禁。一个坏 Release 会自动进入所有用户的账号，所以在创建
+#      Release 之前必须先跑通测试和模板校验。
+#   2. draft 是暂存区。GitHub 的 /releases/latest 端点会跳过 draft 和
+#      prerelease，因此 draft 状态下代码已打 tag、已验证，但一个用户都
+#      收不到。点 Publish 那一刻才是真正的"发布"。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Validate and create draft release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # --generate-notes 需要完整历史来算出上一个 tag 之后的提交
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install -r web/requirements.txt
+          pip install 'cfn-lint==1.46.0'
+
+      - name: Lint CloudFormation template
+        run: cfn-lint template.yaml
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      # 模板里 SourceRevision 留空时会去解析最新 Release，所以模板本身
+      # 必须能被 CloudFormation 接受。这里只做静态校验，真实部署验证在
+      # 维护者自己的测试栈上做（用 prerelease 通道）。
+      - name: Check template size limit
+        run: |
+          SIZE=$(wc -c < template.yaml)
+          echo "template.yaml: ${SIZE} bytes"
+          if [ "$SIZE" -gt 1000000 ]; then
+            echo "::error::template.yaml exceeds the 1MB S3 template limit"
+            exit 1
+          fi
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
+          echo "::notice::Draft release $GITHUB_REF_NAME created. Edit the notes into user-facing text, then publish it to roll out to deployed stacks."

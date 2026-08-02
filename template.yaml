@@ -10,14 +10,26 @@ Parameters:
     Type: String
     Default: sample-cost-guard-for-amazon-bedrock
     Description: GitHub repository name.
-  Branch:
+  SourceRevision:
     Type: String
-    Default: main
-    Description: Git branch to pull source code from.
+    Default: ''
+    Description: >
+      Commit SHA or tag to deploy. Leave EMPTY to auto-resolve the latest
+      published GitHub Release (recommended). The auto-updater always pins an
+      explicit SHA here. Set a value manually only to deploy a specific version.
+  AutoUpgradeEnabled:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Automatically check for new GitHub Releases every week and upgrade the
+      whole stack. Can also be toggled later from the Web Console.
   Version:
     Type: String
     Default: '1'
-    Description: Change this value on each deploy to trigger code re-fetch (use timestamp e.g. 20260706).
+    Description: >
+      Change this value to force a code re-fetch without changing SourceRevision.
+      Not needed when auto-upgrade is enabled.
   AllowedCidrs:
     Type: CommaDelimitedList
     Default: 127.0.0.1/32
@@ -46,6 +58,9 @@ Resources:
   CodeFetcherRole:
     Type: AWS::IAM::Role
     Properties:
+      # 显式命名：StackUpdateRole 的 IAM 策略按 role/${AWS::StackName}-* 授权，
+      # 而 CloudFormation 自动生成的角色名在栈名较长时会被截断，导致匹配失败。
+      RoleName: !Sub "${AWS::StackName}-code-fetcher-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -87,12 +102,39 @@ Resources:
       MemorySize: 1024    # zip 全部在内存 BytesIO 里构建，且内存越大 CPU 越快
       Code:
         ZipFile: |
-          import urllib.request, boto3, zipfile, io, subprocess, tempfile, os, json, datetime
-          KEEP = ('common/', 'monitor/', 'reconciler/', 'web/')
-          def _send(event, context, status, data):
+          import urllib.request, urllib.error, boto3, zipfile, io, subprocess, tempfile, os, json, datetime, re
+          GH_API = 'https://api.github.com'
+          SHA_RE = re.compile(r'^[0-9a-f]{7,40}$')
+          def _api(url, sha=False):
+              hdr = {'User-Agent': 'cfn-bootstrap',
+                     'Accept': 'application/vnd.github.sha' if sha else 'application/vnd.github+json'}
+              req = urllib.request.Request(url, headers=hdr)
+              return urllib.request.urlopen(req, timeout=30).read().decode('utf-8', 'replace')
+          def _resolve(owner, repo, revision):
+              # 返回 (sha, tag)。SourceRevision 为空时解析最新正式 Release。
+              # 注意：release 的 target_commitish 常常是分支名而非 SHA，不可直接使用，
+              # 必须再解析一次 tag 才能拿到不可变的 commit SHA。
+              if revision:
+                  sha = _api('%s/repos/%s/%s/commits/%s' % (GH_API, owner, repo, revision), sha=True).strip()
+                  return sha, ('' if SHA_RE.match(revision) else revision)
+              try:
+                  data = json.loads(_api('%s/repos/%s/%s/releases/latest' % (GH_API, owner, repo)))
+              except urllib.error.HTTPError as e:
+                  if e.code == 404:
+                      raise Exception(
+                          '%s/%s has no published GitHub Release. This project follows Releases, '
+                          'not branches. Create a Release in that repo first, or set the '
+                          'SourceRevision parameter to a specific commit SHA.' % (owner, repo))
+                  raise
+              tag = (data.get('tag_name') or '').strip()
+              if not tag:
+                  raise Exception('latest release of %s/%s has no tag_name' % (owner, repo))
+              sha = _api('%s/repos/%s/%s/commits/%s' % (GH_API, owner, repo, tag), sha=True).strip()
+              return sha, tag
+          def _send(event, context, status, data, reason=None):
               body = json.dumps({
                   'Status': status,
-                  'Reason': 'See CloudWatch Log Stream: ' + context.log_stream_name,
+                  'Reason': reason or ('See CloudWatch Log Stream: ' + context.log_stream_name),
                   'PhysicalResourceId': event.get('PhysicalResourceId') or context.log_stream_name,
                   'StackId': event['StackId'],
                   'RequestId': event['RequestId'],
@@ -124,15 +166,22 @@ Resources:
                       _send(event, context, 'SUCCESS', {})
                       return
                   p = event['ResourceProperties']
-                  req = urllib.request.Request(p['SourceUrl'], headers={'User-Agent': 'cfn-bootstrap'})
+                  owner, repo = p['Owner'], p['Repo']
+                  # SourceRevision 为空 → 跟随最新正式 Release；非空 → 精确部署该版本。
+                  # 无论哪条路径，最终都锁定到不可变的 commit SHA 再下载，
+                  # 绝不使用 refs/heads/<branch>.zip 这类会移动的引用。
+                  sha, tag = _resolve(owner, repo, (p.get('SourceRevision') or '').strip())
+                  src_url = 'https://github.com/%s/%s/archive/%s.zip' % (owner, repo, sha)
+                  print('resolved revision: sha=%s tag=%s' % (sha, tag))
+                  req = urllib.request.Request(src_url, headers={'User-Agent': 'cfn-bootstrap'})
                   raw = urllib.request.urlopen(req, timeout=120).read()
                   src = zipfile.ZipFile(io.BytesIO(raw))
 
-                  # GitHub archive zip 的 comment 字段就是 commit SHA
-                  sha = (src.comment or b'').decode('utf-8', 'ignore').strip()
-                  build_info = 'COMMIT_SHA = "%s"\nBUILD_TIME = "%s"\n' % (sha, datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+                  build_info = (
+                      'COMMIT_SHA = "%s"\nRELEASE_TAG = "%s"\nBUILD_TIME = "%s"\n'
+                      % (sha, tag, datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')))
 
-                  # Build lambda.zip (monitor + reconciler + common)
+                  # Build lambda.zip (monitor + reconciler + updater + common)
                   buf = io.BytesIO()
                   with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as out:
                       for name in src.namelist():
@@ -140,7 +189,7 @@ Resources:
                               continue
                           parts = name.split('/', 1)
                           inner = parts[1] if len(parts) > 1 else parts[0]
-                          if inner and inner.startswith(('common/', 'monitor/', 'reconciler/')):
+                          if inner and inner.startswith(('common/', 'monitor/', 'reconciler/', 'updater/')):
                               out.writestr(inner, src.read(name))
                       out.writestr('common/build_info.py', build_info)
                   buf.seek(0)
@@ -221,15 +270,23 @@ Resources:
                       'LambdaVersionId': resp1.get('VersionId', 'null'),
                       'WebVersionId': resp2.get('VersionId', 'null'),
                       'AgentVersionId': resp3.get('VersionId', 'null'),
+                      'CommitSha': sha,
+                      'ReleaseTag': tag,
                   })
               except Exception as e:
-                  _send(event, context, 'FAILED', {'Error': str(e)})
+                  # Reason 会直接显示在 CloudFormation 事件列表里，把"仓库没有 Release"
+                  # 这类可操作的错误直接暴露给用户，而不是让人去翻 CloudWatch。
+                  _send(event, context, 'FAILED', {'Error': str(e)}, reason=str(e)[:1000])
 
   CodeObject:
     Type: AWS::CloudFormation::CustomResource
     Properties:
       ServiceToken: !GetAtt CodeFetcherFunction.Arn
-      SourceUrl: !Sub "https://github.com/${GitHubOwner}/${GitHubRepo}/archive/refs/heads/${Branch}.zip"
+      Owner: !Ref GitHubOwner
+      Repo: !Ref GitHubRepo
+      # 空 = 解析最新正式 Release；非空 = 精确部署该 SHA/tag。
+      # 自动升级时 Updater 总是写入明确的 SHA，因此这个属性变化会触发重新拉取代码。
+      SourceRevision: !Ref SourceRevision
       Bucket: !Ref CodeBucket
       Key: lambda.zip
       Version: !Ref Version
@@ -258,6 +315,7 @@ Resources:
   LambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub "${AWS::StackName}-lambda-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -345,6 +403,7 @@ Resources:
   WebLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub "${AWS::StackName}-web-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -376,6 +435,9 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-reconciler"
                   - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-web"
+                  # 「立即升级」按钮只是异步触发 Updater，Web Lambda 自身
+                  # 没有任何 CloudFormation 或 IAM 权限。
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-updater"
               - Effect: Allow
                 Action:
                   - iam:ListUsers
@@ -424,10 +486,11 @@ Resources:
         Variables:
           DDB_TABLE: !Ref ConfigTable
           RECONCILER_FUNCTION_NAME: !Sub "${AWS::StackName}-reconciler"
+          UPDATER_FUNCTION_NAME: !Sub "${AWS::StackName}-updater"
           STACK_NAME: !Ref "AWS::StackName"
           GITHUB_OWNER: !Ref GitHubOwner
           GITHUB_REPO: !Ref GitHubRepo
-          GITHUB_BRANCH: !Ref Branch
+          AUTO_UPGRADE_DEFAULT: !Ref AutoUpgradeEnabled
 
   # ===== EventBridge Schedules =====
   MonitorSchedule:
@@ -525,6 +588,7 @@ Resources:
   ApiDeploymentTriggerRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub "${AWS::StackName}-api-deploy-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -627,10 +691,274 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebApi}/*"
 
+  # ===== 自动升级：CloudFormation service role =====
+  # 整栈更新需要覆盖栈内全部资源类型的写权限。这些权限**不**挂在 Updater
+  # Lambda 上，而是收在这个只有 CloudFormation 能扮演的角色里：
+  # Updater 只能"请求 CloudFormation 去改"，它自己无法直接创建 IAM 角色或
+  # 改动任何资源。即使 Updater 的版本判断逻辑被影响（仓库被投毒等），
+  # 攻击者拿到的也只是"触发一次栈更新"，而不是账号内的直接写权限。
+  StackUpdateRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-stack-update-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                # 防混淆代理：只允许本账号的 CloudFormation 扮演
+                aws:SourceAccount: !Ref "AWS::AccountId"
+      Policies:
+        - PolicyName: StackUpdatePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # --- S3: CodeBucket 本身 + 桶内对象 ---
+              - Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:PutBucketVersioning
+                  - s3:GetBucketVersioning
+                  - s3:PutEncryptionConfiguration
+                  - s3:GetEncryptionConfiguration
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:PutBucketTagging
+                  - s3:GetBucketTagging
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/*"
+              # --- IAM: 仅限本栈前缀的角色（含删栈时删除自己） ---
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:PassRole
+                Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-*"
+              # --- Lambda ---
+              - Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:DeleteFunction
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:GetPolicy
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - lambda:ListTags
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-*"
+              # --- DynamoDB（仅本表；删除/替换由 Updater 的安全检查另行拦截）---
+              - Effect: Allow
+                Action:
+                  - dynamodb:CreateTable
+                  - dynamodb:DeleteTable
+                  - dynamodb:DescribeTable
+                  - dynamodb:UpdateTable
+                  - dynamodb:UpdateTimeToLive
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:TagResource
+                  - dynamodb:UntagResource
+                  - dynamodb:ListTagsOfResource
+                Resource: !GetAtt ConfigTable.Arn
+              # --- EventBridge ---
+              - Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:DescribeRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                  - events:ListTargetsByRule
+                  - events:ListTagsForResource
+                  - events:TagResource
+                  - events:UntagResource
+                Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${AWS::StackName}-*"
+              # --- API Gateway ---
+              # REST API 的 ID 在写策略时无法预知（部署才生成），只能放宽到
+              # 本 Region 的 apigateway 控制面，这是此处无法消除的通配符。
+              - Effect: Allow
+                Action:
+                  - apigateway:GET
+                  - apigateway:POST
+                  - apigateway:PUT
+                  - apigateway:PATCH
+                  - apigateway:DELETE
+                Resource: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/*"
+              # --- AgentCore（这些操作不支持资源级授权，只能 '*'）---
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:CreateAgentRuntime
+                  - bedrock-agentcore:UpdateAgentRuntime
+                  - bedrock-agentcore:DeleteAgentRuntime
+                  - bedrock-agentcore:GetAgentRuntime
+                  - bedrock-agentcore:ListAgentRuntimes
+                  - bedrock-agentcore:CreateAgentRuntimeEndpoint
+                  - bedrock-agentcore:UpdateAgentRuntimeEndpoint
+                  - bedrock-agentcore:DeleteAgentRuntimeEndpoint
+                  - bedrock-agentcore:GetAgentRuntimeEndpoint
+                  - bedrock-agentcore:TagResource
+                  - bedrock-agentcore:UntagResource
+                Resource: '*'
+              # --- 自定义资源需要 CloudFormation 回调 Lambda ---
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-*"
+              # --- Lambda 日志组 ---
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:DescribeLogGroups
+                  - logs:PutRetentionPolicy
+                  - logs:TagResource
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-*"
+
+  # ===== 自动升级：Updater Lambda =====
+  UpdaterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-updater-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: UpdaterPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # 仅本栈的变更集操作。注意这里没有任何 iam:* / lambda:Update* 等
+              # 资源写权限——实际改动由 CloudFormation 扮演 StackUpdateRole 完成。
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+              # ValidateTemplate 不支持资源级授权
+              - Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                Resource: '*'
+              # 把 StackUpdateRole 交给 CloudFormation 使用
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt StackUpdateRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
+              # 只能读写模板暂存前缀，碰不到 lambda.zip / web.zip / agent.zip
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/templates/*"
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                Resource: !GetAtt ConfigTable.Arn
+              # 健康检查调 Web Lambda，以及超过 15 分钟时自调用续跑
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-web"
+                  - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-updater"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+
+  UpdaterFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: CodeObject
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-updater"
+      Runtime: python3.12
+      Handler: updater/handler.handler
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: lambda.zip
+        S3ObjectVersion: !GetAtt CodeObject.LambdaVersionId
+      Role: !GetAtt UpdaterRole.Arn
+      Timeout: 900        # 整栈更新较慢，超时前会自调用续跑（见 MAX_WATCH_HOPS）
+      MemorySize: 512
+      Environment:
+        Variables:
+          DDB_TABLE: !Ref ConfigTable
+          STACK_NAME: !Ref "AWS::StackName"
+          GITHUB_OWNER: !Ref GitHubOwner
+          GITHUB_REPO: !Ref GitHubRepo
+          CODE_BUCKET: !Ref CodeBucket
+          STACK_UPDATE_ROLE_ARN: !GetAtt StackUpdateRole.Arn
+          WEB_FUNCTION_NAME: !Sub "${AWS::StackName}-web"
+          AUTO_UPGRADE_DEFAULT: !Ref AutoUpgradeEnabled
+
+  UpdaterSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-updater-schedule"
+      Description: Weekly check for new GitHub Releases
+      # 每周一 UTC 03:00（北京时间 11:00）
+      ScheduleExpression: cron(0 3 ? * MON *)
+      State: ENABLED
+      Targets:
+        - Id: UpdaterLambda
+          Arn: !GetAtt UpdaterFunction.Arn
+
+  UpdaterPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref UpdaterFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt UpdaterSchedule.Arn
+
   # ===== AgentCore: AI 账单总结 Agent =====
   AgentCoreRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub "${AWS::StackName}-agentcore-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -693,6 +1021,20 @@ Outputs:
     Value: !Ref MonitorFunction
   ReconcilerFunctionName:
     Value: !Ref ReconcilerFunction
+  UpdaterFunctionName:
+    Value: !Ref UpdaterFunction
+    Description: Auto-upgrade controller Lambda
+  DeployedCommitSha:
+    Value: !GetAtt CodeObject.CommitSha
+    Description: Commit SHA actually deployed
+  DeployedReleaseTag:
+    Value: !GetAtt CodeObject.ReleaseTag
+    Description: GitHub Release tag actually deployed (empty if a raw SHA was pinned)
+  StackUpdateRoleArn:
+    Value: !GetAtt StackUpdateRole.Arn
+    Description: >
+      CloudFormation service role used by the auto-updater. Pass it explicitly
+      (--role-arn) if you ever need to recover the stack manually.
   ConfigTableName:
     Value: !Ref ConfigTable
   CodeBucketName:

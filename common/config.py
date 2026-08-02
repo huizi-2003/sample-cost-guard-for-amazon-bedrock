@@ -224,3 +224,57 @@ def save_ai_summary_config(enabled: bool, model_id: str):
     put_item('CONFIG', 'ai_summary',
              enabled='true' if enabled else 'false',
              model_id=model_id)
+
+
+
+# ===== 自动升级配置与历史 =====
+# 放在 common/ 是因为 Web Lambda 和 Updater Lambda 都要读它，而两者的 zip
+# 内容不同：web.zip 只含 web/ + common/，lambda.zip 含 common/monitor/
+# reconciler/updater。common/ 是唯一的共同部分。
+
+AUTO_UPGRADE_SK = 'auto_upgrade'
+UPGRADE_HISTORY_PK = 'UPGRADE'
+UPGRADE_HISTORY_TTL_DAYS = 365
+
+
+def get_auto_upgrade_config():
+    """读自动升级配置。
+
+    DDB 无记录时用部署参数 AutoUpgradeEnabled（环境变量 AUTO_UPGRADE_DEFAULT）
+    作为默认值——这样首次部署无需手动写配置，用户在页面上改动后才落库。
+    """
+    item = get_item('CONFIG', AUTO_UPGRADE_SK) or {}
+    default_enabled = os.environ.get('AUTO_UPGRADE_DEFAULT', 'true').lower() == 'true'
+    raw = item.get('enabled')
+    enabled = default_enabled if raw is None else str(raw).lower() == 'true'
+    return {
+        'enabled': enabled,
+        'last_check_at': item.get('last_check_at') or '',
+        'last_status': item.get('last_status') or '',
+        'last_error': item.get('last_error') or '',
+        'last_known_good_sha': item.get('last_known_good_sha') or '',
+        'current_upgrade_id': item.get('current_upgrade_id') or '',
+    }
+
+
+def save_auto_upgrade_config(**attrs):
+    """局部更新自动升级配置（读-改-写；字段少、写入频率极低，够用）。"""
+    current = get_item('CONFIG', AUTO_UPGRADE_SK) or {}
+    merged = {k: v for k, v in current.items() if k not in ('PK', 'SK')}
+    merged.update(attrs)
+    put_item('CONFIG', AUTO_UPGRADE_SK, **merged)
+
+
+def record_upgrade(upgrade_id, **attrs):
+    """写入一条升级记录（PK=UPGRADE, SK=ISO 时间戳，便于按 PK 查全部历史）。"""
+    from datetime import datetime, timedelta, timezone
+    expire_at = int((datetime.now(timezone.utc)
+                     + timedelta(days=UPGRADE_HISTORY_TTL_DAYS)).timestamp())
+    put_item(UPGRADE_HISTORY_PK, upgrade_id, expire_at=expire_at, **attrs)
+
+
+def get_upgrade_history(limit=20):
+    """返回最近的升级记录，按时间倒序。"""
+    items = query_by_pk(UPGRADE_HISTORY_PK)
+    items.sort(key=lambda i: i.get('SK', ''), reverse=True)
+    return items[:limit]

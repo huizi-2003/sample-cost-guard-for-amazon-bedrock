@@ -36,11 +36,11 @@ cd sample-cost-guard-for-amazon-bedrock
 aws cloudformation deploy \
   --template-file template.yaml \
   --stack-name bedrock-cost-guard \
-  --parameter-overrides AllowedCidrs=YOUR_IP/32 Version=$(date +%s) \
-  --capabilities CAPABILITY_IAM
+  --parameter-overrides AllowedCidrs=YOUR_IP/32 \
+  --capabilities CAPABILITY_NAMED_IAM
 ```
 
-等 3~5 分钟即可完成。
+等 3~5 分钟即可完成。部署时会自动下载本仓库**最新正式 Release** 的代码，无需手动打包。
 
 ### 4. 获取管理界面地址
 
@@ -63,18 +63,26 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
 部署后系统会自动：
 - 每 5 分钟监控 Bedrock 用量（超阈值推送告警）
 - 每天凌晨 01:00（北京时间）自动对账
+- 每周一上午 11:00（北京时间）检查并安装新版本
 
 ## 后续更新
 
-代码有更新时，重新执行部署命令即可（改一下 Version）：
+**不需要做任何事。** 系统每周一自动检查新版本并整栈升级，升级后会自动验证服务是否正常；如果有问题会自动退回上一个可用版本，并通过你配置的 Webhook 告警。
+
+在管理界面的「版本管理」页可以：
+- 查看当前版本、最新版本、更新记录（含每次更新的内容）
+- 关闭自动更新（如果你所在组织有变更管控要求）
+- 点「立即更新」手动触发一次
+
+只在需要回退或部署特定版本时才需要命令行：
 
 ```bash
-cd sample-cost-guard-for-amazon-bedrock && git pull
+# 部署指定版本（绕过自动升级）
 aws cloudformation deploy \
   --template-file template.yaml \
   --stack-name bedrock-cost-guard \
-  --parameter-overrides AllowedCidrs=YOUR_IP/32 Version=$(date +%s) \
-  --capabilities CAPABILITY_IAM
+  --parameter-overrides SourceRevision=<commit sha 或 tag> \
+  --capabilities CAPABILITY_NAMED_IAM
 ```
 
 ## 删除

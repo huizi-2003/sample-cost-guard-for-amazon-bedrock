@@ -18,6 +18,8 @@ AWS Bedrock 用量管控工具集：用量监控、每日对账、Web 管理界�
 - [技术架构](#技术架构)
 - [成本估算](#成本估算)
 - [部署](#部署)
+- [自动更新](#自动更新)
+- [维护者指南（fork 后必读）](#维护者指南fork-后必读)
 - [目录结构](#目录结构)
 
 ## 为什么需要这个项目
@@ -208,10 +210,13 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
   - 每 5 分钟自动刷新
 - **配置管理**：阈值、监控 Region 列表、Webhook 设置
 - **版本管理**：
-  - 基于 commit SHA 比对检测更新（当前部署 SHA vs GitHub 仓库分支最新 SHA，构建时自动固化，无需手动维护版本号）
+  - **自动更新**（默认开启）：每周自动检查 GitHub Release 并整栈升级，用户无需操作
+  - 更新记录时间线：每次检查/更新的时间、结果、更新内容（来自 Release notes），可展开查看
+  - 页面开关可随时关闭自动更新，也可点「立即更新」手动触发
+  - 版本号显示 Release tag（如 `v20260802`），构建时由 CodeFetcher 固化进 `common/build_info.py`，无需手动维护
+  - 堆栈名称、最后更新时间、IP 白名单（读取 CloudFormation 栈参数）
   - 检查结果缓存 1 小时（DynamoDB），GitHub 不可达时回退过期缓存
-  - 堆栈名称、最后部署时间、IP 白名单（读取 CloudFormation 栈参数）
-  - 内置升级命令说明
+  - 详见 [自动更新](#自动更新)
 - **⚠️ 安全提示**：本示例未实现用户认证，仅依赖 API Gateway Resource Policy 的 IP 白名单控制访问。如用于生产环境，请自行添加认证机制（如 Cognito、IAM Auth 等），避免管理界面暴露在公网
 
 ### 4. 通知推送
@@ -279,10 +284,11 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 │                                                              │
 │  EventBridge (5min) ──→ Lambda: monitor                      │
 │  EventBridge (daily) ─→ Lambda: reconciler                   │
-│                              │                               │
-│                              ▼                               │
-│                        DynamoDB Table                         │
-│                     (bedrock-cost-guard)                      │
+│  EventBridge (weekly) → Lambda: updater ──┐                  │
+│                              │            │ CreateChangeSet  │
+│                              ▼            ▼                  │
+│                        DynamoDB Table   CloudFormation       │
+│                     (bedrock-cost-guard)  (整栈自动升级)      │
 │                              ▲                               │
 │                              │                               │
 │  API Gateway (REST) ──→ Lambda: web (FastAPI + mangum)        │
@@ -294,20 +300,22 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
   - CloudWatch（跨 Region 读取 Bedrock 指标）
   - Cost Explorer（T+1 账单数据）
   - AgentCore Runtime（可选，AI 账单总结）
+  - GitHub Releases（自动升级的版本来源）
   - 飞书/钉钉/企微 Webhook（告警通知）
 ```
 
 | 组件 | 技术 | 说明 |
 |------|------|------|
-| 后端计算 | Lambda Python 3.12 | monitor + reconciler + web |
-| 定时触发 | EventBridge Rules | 5 分钟 / 每日 UTC 01:00 |
-| 数据存储 | DynamoDB 单表 | 配置 + 阈值 + 对账记录 + 监控记录 + 告警状态 |
+| 后端计算 | Lambda Python 3.12 | monitor + reconciler + updater + web |
+| 定时触发 | EventBridge Rules | 5 分钟 / 每日 UTC 01:00 / 每周一 UTC 03:00 |
+| 数据存储 | DynamoDB 单表 | 配置 + 阈值 + 对账记录 + 监控记录 + 告警状态 + 升级历史 |
 | Web 管理 | FastAPI + mangum + 原生 HTML/JS | API Gateway 代理到 Lambda |
 | 访问控制 | API Gateway Resource Policy | IP 白名单（AllowedCidrs 参数） |
 | 基础设施 | CloudFormation | 纯 serverless，无服务器管理 |
+| 自动升级 | Change Set + 独立 service role | 跟随 GitHub Release，健康检查失败自动回退 |
 | 通知 | Webhook（DDB 配置） | 飞书 / 钉钉 / 企微 |
 | AI 总结 | AgentCore Runtime + Strands Agent | reconciler 可选调用，生成日报中文费用摘要 |
-| 代码来源 | GitHub | 部署时自动从本仓库拉取代码，无需打包 |
+| 代码来源 | GitHub Release | 部署时按不可变 commit SHA 拉取，无需打包 |
 
 ## 成本估算
 
@@ -351,7 +359,7 @@ CloudWatch 成本 ≈ 轮询频率 × Region 数 × 各 Region 活跃模型数 �
 3. Specify template → **Upload a template file** → 选择刚下载的 `template.yaml`。
 4. Stack name 填 `bedrock-cost-guard`。
 5. 参数 `AllowedCidrs` 填你访问 Web Console 的公网 IP（如 `1.2.3.4/32`，多个用逗号分隔；默认 `127.0.0.1/32` 为全部关闭）。
-6. 勾选 **"I acknowledge that AWS CloudFormation might create IAM resources"** → Create stack。
+6. 勾选 **"I acknowledge that AWS CloudFormation might create IAM resources with custom names"** → Create stack。
 7. 等待 3-5 分钟，在 **Outputs** 标签找到 `WebConsoleUrl` 即为管理界面地址。
 
 > 部署过程中模板会自动从 GitHub 下载 monitor/reconciler/web 代码，无需手动打包。
@@ -366,7 +374,7 @@ git clone https://github.com/huizi-2003/sample-cost-guard-for-amazon-bedrock.git
 cd sample-cost-guard-for-amazon-bedrock
 
 # 部署（将 AllowedCidrs 改为你的出口 IP，多个用逗号分隔）
-aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard --parameter-overrides AllowedCidrs=1.2.3.4/32 Version=$(date +%s) --capabilities CAPABILITY_IAM
+aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard --parameter-overrides AllowedCidrs=1.2.3.4/32 --capabilities CAPABILITY_NAMED_IAM
 
 # 查看部署结果（获取 Web Console URL）
 aws cloudformation describe-stacks --stack-name bedrock-cost-guard --query 'Stacks[0].Outputs'
@@ -379,12 +387,121 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard --query 'Stac
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `AllowedCidrs` | 允许访问 Web Console 的 CIDR 列表（逗号分隔）<br/>**变更时自动重新部署 API，Resource Policy 即时生效** | `127.0.0.1/32`（全部关闭） |
-| `Version` | 代码版本标记，改动即触发重新拉代码 + 重新部署 Lambda | `1`（建议用 `$(date +%s)` 时间戳） |
+| `AutoUpgradeEnabled` | 是否每周自动检查并安装更新（也可在 Web Console 里随时切换） | `true` |
+| `SourceRevision` | 要部署的 commit SHA 或 tag。**留空 = 自动解析最新 Release**（推荐） | `''`（空） |
 | `GitHubOwner` | GitHub 仓库所有者（fork 时改为你的用户名） | `huizi-2003` |
 | `GitHubRepo` | GitHub 仓库名 | `sample-cost-guard-for-amazon-bedrock` |
-| `Branch` | 拉取代码的 Git 分支 | `main` |
+| `Version` | 不改 `SourceRevision` 的情况下强制重新拉取代码。启用自动更新后基本不需要动它 | `1` |
 
-> **⚠️ 关于 `Version`**：改了代码就改这个值（触发重新拉取 GitHub 代码），没改代码就保持不变。值本身不重要，只要和上次不同即可，用 `$(date +%s)` 自动生成时间戳最省事。
+> **⚠️ 关于 `SourceRevision`**：留空时部署会去查该仓库的**最新正式 Release**，并锁定到它对应的不可变 commit SHA。
+> 如果目标仓库还没有任何 Release，部署会**明确失败并提示先创建 Release**——不会偷偷回退到 `main` 分支。
+> 想部署某个未发布的提交（例如自己开发测试），显式传 `SourceRevision=<commit sha>` 即可。
+
+## 自动更新
+
+本项目跟随 **GitHub Release** 更新，而不是跟随 `main` 分支。这意味着维护者日常 push 到 main 不会影响任何已部署的栈，只有主动发布 Release 才会触发升级。
+
+### 用户视角
+
+默认开启，无需任何操作：
+
+```
+EventBridge（每周一 UTC 03:00 / 北京时间 11:00）
+      ↓
+Updater Lambda 检查最新 Release
+      ↓
+锁定不可变 commit SHA，并确认它确实比当前版本更新
+      ↓
+下载该 SHA 的 template.yaml → CloudFormation Change Set
+      ↓
+安全检查通过后自动执行整栈更新
+      ↓
+调用 /api/health 验证应用真的活着
+      ↓
+通过 → 记录为"已知可用版本"　　失败 → 自动回退到上一个可用版本
+```
+
+在 Web Console 的「版本管理」页可以：关闭自动更新、点「立即更新」、查看更新记录和每次更新的内容。
+
+**通知策略**：更新成功不发通知（避免每周打扰），失败或自动回退时通过已配置的 Webhook 告警。
+
+### 安全设计
+
+| 机制 | 作用 |
+|------|------|
+| 只跟随 Release | 误 push、半成品、未经发版的代码到不了用户手上 |
+| 锁定 commit SHA | 不使用 `refs/heads/main.zip` 这类会移动的引用，部署内容可复现 |
+| 方向判定 | 用 GitHub compare API 确认是 `ahead`；`behind` / `diverged` 一律拒绝，避免降级或跨分叉部署 |
+| 独立 CloudFormation service role | 整栈写权限收在 `StackUpdateRole`（仅 `cloudformation.amazonaws.com` 可扮演）。Updater 自己**没有**任何 IAM / Lambda / DynamoDB 写权限，只能"请求 CloudFormation 去改" |
+| 有状态资源保护 | Change Set 若要删除或替换 DynamoDB 表、S3 桶，拒绝自动执行并告警 |
+| 双层回滚 | CloudFormation 负责基础设施级失败回滚；健康检查负责"部署成功但代码是坏的"这种 CFn 抓不到的情况 |
+| Web Lambda 零特权 | 「立即更新」只是一次 `lambda:InvokeFunction`，对外提供 HTTP 服务的 Lambda 不持有升级权限 |
+
+> **⚠️ 供应链提示**：自动更新默认开启，意味着本仓库对所有已部署的账号具有代码执行能力。
+> 如果你所在组织有变更管控要求，请在部署时设置 `AutoUpgradeEnabled=false`，或在 Web Console 中关闭。
+
+### 手动恢复
+
+自动升级会给栈关联 `StackUpdateRole`。一旦关联，后续操作（包括删栈）默认都用它。如果需要用管理员身份手工干预，显式传 `--role-arn` 覆盖：
+
+```bash
+# 从 Outputs 拿到角色 ARN
+aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
+  --query 'Stacks[0].Outputs[?OutputKey==`StackUpdateRoleArn`].OutputValue' --output text
+
+# 回退到指定版本（跳过自动升级逻辑）
+aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard \
+  --parameter-overrides SourceRevision=<已知可用的 commit sha> \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+## 维护者指南（fork 后必读）
+
+如果你 fork 了本项目并希望自己维护版本，有三件事必须做：
+
+**1. 部署时改 `GitHubOwner`**，否则你的栈会从上游仓库拉代码，你自己的改动会在下次自动更新时被覆盖：
+
+```bash
+aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard \
+  --parameter-overrides GitHubOwner=你的用户名 AllowedCidrs=1.2.3.4/32 \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+**2. 在你的仓库里创建至少一个 Release**。`SourceRevision` 留空时会查 `/releases/latest`，你的 fork 默认没有任何 Release，部署会失败。
+
+**3. 按下面的流程发版**，否则用户永远停在旧版本（而且是静默的，没有任何报错）。
+
+### 发版流程
+
+```
+git tag v20260802 && git push origin v20260802
+      ↓
+GitHub Actions（.github/workflows/release.yml）自动跑 cfn-lint + pytest
+      ↓  失败 → 不创建 Release，什么都不会发出去
+      ↓  通过
+创建 draft Release（notes 预填 commit 列表作为草稿）
+      ↓
+把 notes 改写成面向用户的说明，点 Publish
+      ↓
+各部署的栈在下一次每周检查时自动升级
+```
+
+两个关键点：
+
+- **CI 是门禁。** 一个坏 Release 会自动进入所有用户的账号，所以创建 Release 前必须先通过测试和模板校验。
+- **draft 是暂存区。** `/releases/latest` 端点会跳过 draft 和 prerelease，因此 draft 状态下代码已打 tag、已验证，但一个用户都收不到。点 Publish 那一刻才算真正发布。
+
+版本号建议用日期格式 `vYYYYMMDD`（一天内发多次可加后缀，如 `v20260802.1`）。Release notes 会**直接显示给非技术用户**，所以请写面向用户的说明，而不是 `fix: ...` 这类 commit 前缀。
+
+想先在自己的栈上验证再放给用户：把 Release 勾选为 **prerelease**。`/releases/latest` 会跳过它，普通用户看不见；你自己的测试栈用 `SourceRevision=<该 tag>` 显式部署即可。
+
+### 本地开发
+
+```bash
+pip install -r requirements-dev.txt -r web/requirements.txt
+python -m pytest tests/ -q      # 417 个测试
+cfn-lint template.yaml
+```
 
 ### 部署后
 
@@ -392,13 +509,21 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard --query 'Stac
 - Webhook URL + 渠道类型（feishu / dingtalk / wecom）
 - 监控 Region 列表
 - 阈值
+- 自动更新开关
+
+**升级不需要手工操作** —— 系统每周一自动检查 GitHub Release 并整栈升级，失败会自动回退。详见 [自动更新](#自动更新)。
 
 ```bash
-# 更新代码：push 后重新部署（Version 用时间戳自动变）
-aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard --parameter-overrides Version=$(date +%s) AllowedCidrs=1.2.3.4/32 --capabilities CAPABILITY_IAM
+# 手动触发一次升级检查（等同于页面上的「立即更新」）
+aws lambda invoke --function-name bedrock-cost-guard-updater \
+  --payload '{"action":"upgrade_now"}' --cli-binary-format raw-in-base64-out /dev/null
 
 # 手动触发对账（不用等定时任务）
 aws lambda invoke --function-name bedrock-cost-guard-reconciler --region us-east-1 /dev/null
+
+# 部署指定版本（绕过自动升级，用于回退或测试）
+aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard \
+  --parameter-overrides SourceRevision=<commit sha 或 tag> --capabilities CAPABILITY_NAMED_IAM
 
 # 删除所有资源
 aws cloudformation delete-stack --stack-name bedrock-cost-guard
@@ -411,21 +536,29 @@ bedrock-cost-guard/
 ├── README.md
 ├── DEPLOY-GUIDE.md        # 部署指南（快速上手）
 ├── template.yaml          # CloudFormation 模板（自包含：自动建桶 + 拉代码 + 部署）
+├── .github/
+│   └── workflows/
+│       ├── ci.yml         # push main / PR：cfn-lint + pytest
+│       └── release.yml    # push tag v*：验证通过后创建 draft Release
 ├── common/
 │   ├── __init__.py
-│   ├── config.py          # DynamoDB 读写封装
+│   ├── config.py          # DynamoDB 读写封装（含自动升级配置与历史）
+│   ├── release.py         # GitHub Release 通道：版本发现、方向判定、文件下载
 │   ├── webhook.py         # 通知发送（飞书/钉钉/企微）
 │   ├── holiday.py         # 中国工作日判断（节假日/调休）
 │   ├── iam_scanner.py     # IAM Bedrock 权限扫描逻辑
 │   ├── pricing.py         # 模型价格匹配与费用估算
-│   ├── labels.py          # CloudWatch 指标 label 解析（模型名/token类型提取）
-│   └── version.py         # 项目版本号定义
+│   └── labels.py          # CloudWatch 指标 label 解析（模型名/token类型提取）
+│   # build_info.py 由 CodeFetcher 在部署时生成（COMMIT_SHA / RELEASE_TAG / BUILD_TIME）
 ├── monitor/
 │   ├── __init__.py
 │   └── handler.py         # 用量监控 Lambda
 ├── reconciler/
 │   ├── __init__.py
 │   └── handler.py         # 每日对账 Lambda
+├── updater/
+│   ├── __init__.py
+│   └── handler.py         # 自动升级控制器 Lambda（Change Set + 健康检查 + 回退）
 ├── agent/                 # AI 账单总结 Agent（部署到 AgentCore Runtime）
 │   ├── main.py            # Strands Agent 入口（接收对账数据，生成中文摘要）
 │   └── pyproject.toml     # Agent 依赖声明（AgentCore Runtime 自动安装）
@@ -433,9 +566,9 @@ bedrock-cost-guard/
 │   ├── app.py             # FastAPI 后端
 │   ├── requirements.txt
 │   └── static/
-│       ├── index.html     # 管理页面（费用总览 + 历史对账 + 今日监控 + 配置管理）
+│       ├── index.html     # 管理页面（费用总览 + 历史对账 + 今日监控 + 配置管理 + 版本管理）
 │       └── chart.min.js   # Chart.js 图表库
-├── tests/                 # 单元测试
+├── tests/                 # 单元测试（417 个）
 │   ├── test_config.py
 │   ├── test_monitor.py
 │   ├── test_monitor_delta.py
@@ -443,6 +576,7 @@ bedrock-cost-guard/
 │   ├── test_reconciler.py
 │   ├── test_reconciler_extended.py
 │   ├── test_reconciler_ai.py
+│   ├── test_updater.py    # 自动升级：方向判定 / 安全检查 / 健康检查 / 回退
 │   ├── test_web_api.py
 │   ├── test_web_crossyear.py
 │   ├── test_web_extended.py
@@ -451,7 +585,7 @@ bedrock-cost-guard/
 │   ├── test_pricing.py
 │   ├── test_notify_policy.py
 │   ├── test_labels.py
-│   └── test_version.py
+│   └── test_version.py    # 版本管理 API + Release 通道
 └── docs/                  # 设计文档
 ```
 

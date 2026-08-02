@@ -24,8 +24,10 @@ from common.config import (
     get_webhook_config, save_webhook_config,
     get_notify_policy, save_notify_policy,
     get_monitor_enabled, save_monitor_enabled,
-    get_ai_summary_config, save_ai_summary_config
+    get_ai_summary_config, save_ai_summary_config,
+    get_auto_upgrade_config, save_auto_upgrade_config, get_upgrade_history
 )
+from common.release import ReleaseNotFound, get_latest_release
 from common.pricing import PRICING, match_pricing as _match_pricing
 from common.labels import (
     extract_model_name as _extract_model_name,
@@ -876,118 +878,288 @@ async def backfill(request: Request):
     }
 
 
+# ===== 健康检查 =====
+
+@app.get('/api/health')
+async def health():
+    """轻量健康检查，供升级控制器在整栈更新后验证应用真的活着。
+
+    CloudFormation 只保证"基础设施更新成功"。如果新代码有导入错误或运行时
+    bug，栈状态依然是 UPDATE_COMPLETE，而用户面对的是白屏控制台。这个端点
+    被 Updater 调用，失败即触发自动回退。
+
+    覆盖范围：web/ 与 common/ 的导入 + DDB 可读。monitor/ 和 reconciler/
+    不在 web.zip 里，无法在此验证。
+    """
+    checks = {}
+
+    # DDB 连通性 + 权限（读一个必然存在或返回 None 的 key，都算通过）
+    try:
+        get_item('CONFIG', 'health_probe')
+        checks['dynamodb'] = 'ok'
+    except Exception as e:
+        logger.error(f'健康检查失败 - DynamoDB: {e}')
+        return JSONResponse(status_code=503,
+                            content={'ok': False, 'checks': {'dynamodb': f'error: {e}'}})
+
+    # 关键业务模块可导入（web.zip 打包不完整时这里会炸）
+    try:
+        from common.pricing import PRICING as _p  # noqa: F401
+        from common.labels import extract_model_name as _e  # noqa: F401
+        checks['modules'] = 'ok'
+    except Exception as e:
+        logger.error(f'健康检查失败 - 模块导入: {e}')
+        return JSONResponse(status_code=503,
+                            content={'ok': False, 'checks': {'modules': f'error: {e}'}})
+
+    commit_sha, release_tag, build_time = _build_info()
+    return {
+        'ok': True,
+        'checks': checks,
+        'commit_sha': commit_sha,
+        'release_tag': release_tag,
+        'build_time': build_time,
+    }
+
+
 # ===== 版本信息 =====
 
-# 缓存有效期（秒）
+# 远端 release 查询的缓存有效期（秒）。Updater 每周检查一次，这个缓存只是
+# 让页面在两次定时检查之间也能看到较新的信息，同时避免每次访问都打 GitHub。
 _VERSION_CACHE_TTL = 3600  # 1 小时
+
+# 自动升级的定时表达式是 cron(0 3 ? * MON *)，与 template.yaml 保持一致
+_CHECK_WEEKDAY = 0   # Monday
+_CHECK_HOUR_UTC = 3
+
+
+def _build_info():
+    """读取构建时注入的版本信息。
+
+    容错：本地开发和早于本功能的旧部署没有 common/build_info.py。
+    """
+    try:
+        from common import build_info
+        return (getattr(build_info, 'COMMIT_SHA', '') or '',
+                getattr(build_info, 'RELEASE_TAG', '') or '',
+                getattr(build_info, 'BUILD_TIME', '') or '')
+    except ImportError:
+        return '', '', ''
+
+
+def _next_check_time(now=None):
+    """下一次自动检查的时间（UTC）。"""
+    now = now or datetime.now(timezone.utc)
+    days = (_CHECK_WEEKDAY - now.weekday()) % 7
+    candidate = (now + timedelta(days=days)).replace(
+        hour=_CHECK_HOUR_UTC, minute=0, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=7)
+    return candidate
 
 
 @app.get('/api/version')
 async def get_version_info():
-    """返回版本信息：commit SHA、堆栈名称、IP 白名单、远端最新 SHA。"""
+    """版本信息：当前版本、最新 Release、自动升级状态、IP 白名单。"""
+    commit_sha, release_tag, build_time = _build_info()
 
-    # 读取构建时注入的 commit SHA（容错：本地开发/旧部署可能没有这个文件）
-    try:
-        from common.build_info import COMMIT_SHA
-    except ImportError:
-        COMMIT_SHA = ''
-
-    # 环境变量优先，fallback 保证本地开发/测试可用
     stack_name = os.environ.get('STACK_NAME') or 'bedrock-cost-guard'
     upstream_owner = os.environ.get('GITHUB_OWNER', 'huizi-2003')
     upstream_repo = os.environ.get('GITHUB_REPO', 'sample-cost-guard-for-amazon-bedrock')
-    upstream_branch = os.environ.get('GITHUB_BRANCH', 'main')
 
     result = {
-        'commit_sha': COMMIT_SHA,
+        'commit_sha': commit_sha,
+        'release_tag': release_tag,
+        'build_time': build_time,
+        'latest_tag': None,
         'latest_sha': None,
+        'latest_published_at': None,
+        'latest_stale': False,
         'has_update': None,
+        'no_release': False,
         'stack_name': stack_name,
         'allowed_cidrs': [],
         'last_updated': None,
     }
 
-    # 查询 CloudFormation 栈信息（白名单、最后更新时间）
+    # CloudFormation 栈信息（白名单、最后更新时间）
     try:
         cfn = boto3.client('cloudformation')
-        resp = cfn.describe_stacks(StackName=stack_name)
-        stacks = resp.get('Stacks', [])
+        stacks = cfn.describe_stacks(StackName=stack_name).get('Stacks', [])
         if stacks:
             stack = stacks[0]
             last_updated = stack.get('LastUpdatedTime') or stack.get('CreationTime')
             if last_updated:
                 result['last_updated'] = last_updated.strftime('%Y-%m-%dT%H:%M:%SZ')
-
             params = {p['ParameterKey']: p['ParameterValue'] for p in stack.get('Parameters', [])}
             cidrs_str = params.get('AllowedCidrs', '')
             if cidrs_str:
                 result['allowed_cidrs'] = [c.strip() for c in cidrs_str.split(',') if c.strip()]
     except Exception as e:
-        logger.warning(f"Failed to describe CloudFormation stack: {e}")
+        logger.warning(f'查询 CloudFormation 栈失败: {e}')
 
-    # 获取远端最新 commit SHA（带 DDB 缓存，1h TTL）
-    latest_sha, is_stale = _get_latest_sha_cached(upstream_owner, upstream_repo, upstream_branch)
-    result['latest_sha'] = latest_sha
-    result['latest_sha_stale'] = is_stale
+    # 最新 Release（带 DDB 缓存）
+    latest, is_stale, no_release = _get_latest_release_cached(upstream_owner, upstream_repo)
+    result['latest_stale'] = is_stale
+    result['no_release'] = no_release
+    if latest:
+        result['latest_tag'] = latest.get('tag')
+        result['latest_sha'] = latest.get('sha')
+        result['latest_published_at'] = latest.get('published_at')
+        # 页面只做"是否相同"的粗判：维护者的 release 是单调向前的，所以
+        # tag/SHA 不同即视为有新版本。真正决定能否升级的严格方向判定
+        # （ahead / behind / diverged）在 Updater 里做，见 common/release.compare_commits。
+        if commit_sha and latest.get('sha'):
+            result['has_update'] = (latest['sha'] != commit_sha)
 
-    # 判定是否有更新
-    if COMMIT_SHA and latest_sha:
-        result['has_update'] = (latest_sha != COMMIT_SHA)
-    # 任一边缺失 → has_update 保持 None，前端显示"无法检查更新"
+    # 自动升级状态
+    try:
+        cfg = get_auto_upgrade_config()
+        result['auto_upgrade'] = {
+            'enabled': cfg['enabled'],
+            'last_check_at': cfg['last_check_at'] or None,
+            'last_status': cfg['last_status'] or None,
+            'last_error': cfg['last_error'] or None,
+            'in_progress': bool(cfg['current_upgrade_id']),
+            'next_check_at': _next_check_time().strftime('%Y-%m-%dT%H:%M:%SZ'),
+        }
+    except Exception as e:
+        logger.warning(f'读取自动升级配置失败: {e}')
+        result['auto_upgrade'] = None
 
     return result
 
 
-def _get_latest_sha_cached(owner: str, repo: str, branch: str):
-    """获取远端最新 commit SHA，带 DDB 缓存（1h TTL）。
+def _get_latest_release_cached(owner: str, repo: str):
+    """获取最新正式 Release，带 DDB 缓存（1h TTL）。
 
-    返回 (sha, is_stale):
-    - (sha, False): 新鲜缓存或刚从 GitHub 拉取
-    - (sha, True): GitHub 失败，回退过期缓存
-    - (None, False): 无缓存且 GitHub 不可达
-
-    缓存策略：
-    - 1h 内直接返回缓存
-    - 过期后尝试拉 GitHub；成功则更新缓存
-    - GitHub 失败（含 403 限流）时：有过期缓存就用（stale），无缓存返回 None
+    返回 (release_dict | None, is_stale, no_release):
+      - (dict, False, False): 新鲜缓存或刚从 GitHub 拉取
+      - (dict, True,  False): GitHub 失败，回退过期缓存
+      - (None, False, True):  仓库还没有正式 Release
+      - (None, False, False): 无缓存且 GitHub 不可达
     """
     now = datetime.now(timezone.utc)
     now_iso = now.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    # 读缓存
     cached = get_item('CONFIG', 'version_check')
-    if cached:
-        checked_at = cached.get('checked_at', '')
-        cached_sha = cached.get('latest_sha', '')
-        if checked_at and cached_sha:
-            try:
-                checked_time = datetime.fromisoformat(checked_at.replace('Z', '+00:00'))
-                age = (now - checked_time).total_seconds()
-                if age < _VERSION_CACHE_TTL:
-                    return cached_sha, False
-            except (ValueError, TypeError):
-                pass
+    if cached and cached.get('latest_sha') and cached.get('checked_at'):
+        try:
+            checked_time = datetime.fromisoformat(cached['checked_at'].replace('Z', '+00:00'))
+            if (now - checked_time).total_seconds() < _VERSION_CACHE_TTL:
+                return _cached_to_release(cached), False, False
+        except (ValueError, TypeError):
+            pass
 
-    # 缓存过期或不存在，尝试拉 GitHub
     try:
-        url = f'https://api.github.com/repos/{owner}/{repo}/commits/{branch}'
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'bedrock-cost-guard',
-            'Accept': 'application/vnd.github.sha',
-        })
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            latest_sha = resp.read().decode().strip()
-        if latest_sha:
-            put_item('CONFIG', 'version_check', latest_sha=latest_sha, checked_at=now_iso,
-                     expire_at=int(now.timestamp()) + 7 * 86400)
-            return latest_sha, False
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-        logger.warning(f"Failed to fetch latest commit SHA from GitHub: {e}")
+        latest = get_latest_release(owner, repo)
+        put_item('CONFIG', 'version_check',
+                 latest_sha=latest['sha'], latest_tag=latest['tag'],
+                 latest_notes=(latest.get('notes') or '')[:4000],
+                 latest_published_at=latest.get('published_at') or '',
+                 checked_at=now_iso,
+                 expire_at=int(now.timestamp()) + 30 * 86400)
+        return latest, False, False
+    except ReleaseNotFound as e:
+        logger.warning(str(e))
+        return None, False, True
+    except Exception as e:
+        logger.warning(f'获取最新 Release 失败: {e}')
 
-    # GitHub 失败，回退 stale 缓存
     if cached and cached.get('latest_sha'):
-        return cached['latest_sha'], True
-    return None, False
+        return _cached_to_release(cached), True, False
+    return None, False, False
+
+
+def _cached_to_release(item):
+    return {
+        'tag': item.get('latest_tag') or '',
+        'sha': item.get('latest_sha') or '',
+        'notes': item.get('latest_notes') or '',
+        'published_at': item.get('latest_published_at') or '',
+    }
+
+
+# ===== 自动升级：开关、历史、手动触发 =====
+
+@app.get('/api/config/auto-upgrade')
+async def get_config_auto_upgrade():
+    """自动升级开关及最近一次检查状态。"""
+    cfg = get_auto_upgrade_config()
+    return {
+        'enabled': cfg['enabled'],
+        'last_check_at': cfg['last_check_at'] or None,
+        'last_status': cfg['last_status'] or None,
+        'last_error': cfg['last_error'] or None,
+        'in_progress': bool(cfg['current_upgrade_id']),
+        'next_check_at': _next_check_time().strftime('%Y-%m-%dT%H:%M:%SZ'),
+    }
+
+
+@app.post('/api/config/auto-upgrade')
+async def set_config_auto_upgrade(request: Request):
+    """开启/关闭自动升级。"""
+    data = await request.json()
+    enabled = data.get('enabled')
+    if not isinstance(enabled, bool):
+        return JSONResponse(status_code=400, content={'error': 'enabled 必须是 true 或 false'})
+    save_auto_upgrade_config(enabled='true' if enabled else 'false')
+    return {'enabled': enabled, 'message': '自动更新已开启' if enabled else '自动更新已关闭'}
+
+
+@app.get('/api/upgrade/history')
+async def upgrade_history(limit: int = Query(20, ge=1, le=100)):
+    """升级记录，按时间倒序。changelog 直接来自 Release notes。"""
+    items = get_upgrade_history(limit=limit)
+    history = []
+    for it in items:
+        history.append({
+            'time': it.get('SK', ''),
+            'status': it.get('status', ''),
+            'from_sha': it.get('from_sha', ''),
+            'from_tag': it.get('from_tag', ''),
+            'to_sha': it.get('to_sha', ''),
+            'to_tag': it.get('to_tag', ''),
+            'changelog': it.get('changelog', ''),
+            'commit_count': int(it.get('commit_count', 0) or 0),
+            'error': it.get('error', ''),
+            'is_rollback': str(it.get('is_rollback', 'false')).lower() == 'true',
+            'started_at': it.get('started_at', ''),
+            'finished_at': it.get('finished_at', ''),
+        })
+    return {'history': history}
+
+
+@app.post('/api/upgrade/now')
+async def upgrade_now():
+    """「立即升级」：异步触发 Updater。
+
+    Web Lambda 只做一次 lambda:InvokeFunction，自身没有任何 CloudFormation
+    或 IAM 权限——真正的升级动作全部在 Updater 里完成。
+    """
+    cfg = get_auto_upgrade_config()
+    if cfg['current_upgrade_id']:
+        return JSONResponse(status_code=409, content={
+            'error': '已有升级正在进行中，请稍后再试',
+            'current_upgrade_id': cfg['current_upgrade_id'],
+        })
+
+    updater = os.environ.get('UPDATER_FUNCTION_NAME')
+    if not updater:
+        return JSONResponse(status_code=503,
+                            content={'error': '未配置升级控制器（UPDATER_FUNCTION_NAME 缺失）'})
+
+    try:
+        boto3.client('lambda').invoke(
+            FunctionName=updater,
+            InvocationType='Event',
+            Payload=json.dumps({'action': 'upgrade_now'}).encode('utf-8'),
+        )
+    except Exception as e:
+        logger.error(f'触发升级失败: {e}')
+        return JSONResponse(status_code=500, content={'error': f'触发升级失败: {e}'})
+
+    return {'message': '已开始检查并升级，整个过程约需 5-10 分钟，可稍后刷新本页查看结果'}
 
 
 # ===== Lambda handler (API Gateway) =====
