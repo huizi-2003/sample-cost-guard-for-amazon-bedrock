@@ -387,7 +387,6 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard --query 'Stac
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `AllowedCidrs` | 允许访问 Web Console 的 CIDR 列表（逗号分隔）<br/>**变更时自动重新部署 API，Resource Policy 即时生效** | `127.0.0.1/32`（全部关闭） |
-| `AutoUpgradeEnabled` | 是否每周自动检查并安装更新（也可在 Web Console 里随时切换） | `true` |
 | `SourceRevision` | 要部署的 commit SHA 或 tag。**留空 = 自动解析最新 Release**（推荐） | `''`（空） |
 | `GitHubOwner` | GitHub 仓库所有者（fork 时改为你的用户名） | `huizi-2003` |
 | `GitHubRepo` | GitHub 仓库名 | `sample-cost-guard-for-amazon-bedrock` |
@@ -438,7 +437,7 @@ Updater Lambda 检查最新 Release
 | Web Lambda 零特权 | 「立即更新」只是一次 `lambda:InvokeFunction`，对外提供 HTTP 服务的 Lambda 不持有升级权限 |
 
 > **⚠️ 供应链提示**：自动更新默认开启，意味着本仓库对所有已部署的账号具有代码执行能力。
-> 如果你所在组织有变更管控要求，请在部署时设置 `AutoUpgradeEnabled=false`，或在 Web Console 中关闭。
+> 如果你所在组织有变更管控要求，在 Web Console 的「版本管理」页关闭自动更新即可（开关存在 DynamoDB，不需要重新部署）。
 
 ### 手动恢复
 

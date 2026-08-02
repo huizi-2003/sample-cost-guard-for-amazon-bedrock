@@ -134,9 +134,13 @@ class TestReleaseUpdateCheck:
     @patch('web.app.boto3.client')
     @patch('web.app.get_item', return_value=None)
     @patch('web.app.put_item')
-    async def test_no_build_info_has_update_none(self, mock_put, mock_get_item, mock_boto,
-                                                 mock_urlopen, mock_cfg, client):
-        """无 build_info（本地开发/旧部署）→ has_update = None，接口仍 200。"""
+    async def test_no_build_info_treated_as_outdated(self, mock_put, mock_get_item, mock_boto,
+                                                     mock_urlopen, mock_cfg, client):
+        """无 build_info（本地开发/旧部署）→ 视为过期，has_update = True。
+
+        与 Updater 的处理保持一致：本地版本未知时不是"无法判断"，而是
+        "默认自己不是最新"，这样旧部署能自愈到最新 Release。
+        """
         mock_boto.return_value = _cfn_empty()
         mock_urlopen.side_effect = gh_responses(sha='remote_sha_abc')
 
@@ -148,7 +152,7 @@ class TestReleaseUpdateCheck:
         assert data['commit_sha'] == ''
         assert data['release_tag'] == ''
         assert data['latest_sha'] == 'remote_sha_abc'
-        assert data['has_update'] is None
+        assert data['has_update'] is True
 
     @pytest.mark.anyio
     @patch('web.app.get_auto_upgrade_config', return_value=DEFAULT_CFG)

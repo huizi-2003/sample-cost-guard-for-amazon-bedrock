@@ -545,11 +545,6 @@ def check_and_upgrade(event, context):
 
     target_sha, target_tag = rel['sha'], rel['tag']
 
-    if not current_sha:
-        msg = '无法确定当前部署版本（build_info 缺失），不执行自动升级'
-        save_config(last_check_at=now_iso, last_status=STATUS_BLOCKED, last_error=msg)
-        return {'status': STATUS_BLOCKED, 'reason': msg}
-
     if target_sha == current_sha:
         save_config(last_check_at=now_iso, last_status=STATUS_NO_UPDATE, last_error='',
                     last_known_good_sha=cfg['last_known_good_sha'] or current_sha)
@@ -557,24 +552,33 @@ def check_and_upgrade(event, context):
                        to_sha=target_sha, to_tag=target_tag, is_rollback='false')
         return {'status': STATUS_NO_UPDATE, 'version': target_tag}
 
-    # 只有 'ahead' 才升级：把"不同"细分为新版 / 回退 / 分叉
-    try:
-        cmp_result = compare_commits(owner, repo, current_sha, target_sha)
-    except Exception as e:  # noqa: BLE001
-        msg = f'比较版本失败: {e}'
-        save_config(last_check_at=now_iso, last_status=STATUS_FAILED, last_error=msg)
-        return {'status': STATUS_FAILED, 'error': msg}
+    if current_sha:
+        # 只有 'ahead' 才升级：把"不同"细分为新版 / 回退 / 分叉
+        try:
+            cmp_result = compare_commits(owner, repo, current_sha, target_sha)
+        except Exception as e:  # noqa: BLE001
+            msg = f'比较版本失败: {e}'
+            save_config(last_check_at=now_iso, last_status=STATUS_FAILED, last_error=msg)
+            return {'status': STATUS_FAILED, 'error': msg}
 
-    if cmp_result['status'] != 'ahead':
-        msg = (f'最新 Release {target_tag} 相对当前版本为 "{cmp_result["status"]}"，'
-               f'不是更新的版本，已跳过（避免降级或跨分叉部署）')
-        save_config(last_check_at=now_iso, last_status=STATUS_BLOCKED, last_error=msg)
-        record_history(now_iso, status=STATUS_BLOCKED, from_sha=current_sha,
-                       to_sha=target_sha, to_tag=target_tag, error=msg, is_rollback='false')
-        logger.warning(msg)
-        return {'status': STATUS_BLOCKED, 'reason': msg}
-
-    changelog = rel['notes'] or '\n'.join(f'- {m}' for m in cmp_result['commits'])
+        if cmp_result['status'] != 'ahead':
+            msg = (f'最新 Release {target_tag} 相对当前版本为 "{cmp_result["status"]}"，'
+                   f'不是更新的版本，已跳过（避免降级或跨分叉部署）')
+            save_config(last_check_at=now_iso, last_status=STATUS_BLOCKED, last_error=msg)
+            record_history(now_iso, status=STATUS_BLOCKED, from_sha=current_sha,
+                           to_sha=target_sha, to_tag=target_tag, error=msg, is_rollback='false')
+            logger.warning(msg)
+            return {'status': STATUS_BLOCKED, 'reason': msg}
+        changelog = rel['notes'] or '\n'.join(f'- {m}' for m in cmp_result['commits'])
+        commit_count = cmp_result['ahead_by']
+    else:
+        # 当前版本未知（build_info 缺失，例如早于本功能的旧部署）。
+        # 此时没有基准 SHA，做不了方向判定，但"停在未知版本永不更新"比
+        # "升级到最新正式 Release"风险更大——后者至少是经过 CI 和发版
+        # 流程验证的版本，而且升级后还有健康检查兜底。所以视为过期直接升级。
+        logger.info(f'当前版本未知，视为过期，升级到最新 Release {target_tag}')
+        changelog = rel['notes']
+        commit_count = 0
     upgrade_id = now_iso
     ctx_info = {
         'target_sha': target_sha, 'target_tag': target_tag, 'from_sha': current_sha,
@@ -585,7 +589,7 @@ def check_and_upgrade(event, context):
     record_history(upgrade_id, status=STATUS_UPDATING, started_at=now_iso,
                    from_sha=current_sha, from_tag=current_tag, to_sha=target_sha,
                    to_tag=target_tag, changelog=changelog[:8000],
-                   commit_count=cmp_result['ahead_by'], is_rollback='false')
+                   commit_count=commit_count, is_rollback='false')
     save_config(last_check_at=now_iso, last_status=STATUS_UPDATING,
                 last_error='', current_upgrade_id=upgrade_id,
                 last_known_good_sha=cfg['last_known_good_sha'] or current_sha)

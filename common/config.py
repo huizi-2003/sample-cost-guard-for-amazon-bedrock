@@ -240,13 +240,13 @@ UPGRADE_HISTORY_TTL_DAYS = 365
 def get_auto_upgrade_config():
     """读自动升级配置。
 
-    DDB 无记录时用部署参数 AutoUpgradeEnabled（环境变量 AUTO_UPGRADE_DEFAULT）
-    作为默认值——这样首次部署无需手动写配置，用户在页面上改动后才落库。
+    自动更新默认开启：DDB 无记录即视为开启，用户在页面上关闭后才落库。
+    这里不读任何部署参数——开关的唯一真相来源就是 DDB，避免栈参数和页面
+    配置各说一套。
     """
     item = get_item('CONFIG', AUTO_UPGRADE_SK) or {}
-    default_enabled = os.environ.get('AUTO_UPGRADE_DEFAULT', 'true').lower() == 'true'
     raw = item.get('enabled')
-    enabled = default_enabled if raw is None else str(raw).lower() == 'true'
+    enabled = True if raw is None else str(raw).lower() == 'true'
     return {
         'enabled': enabled,
         'last_check_at': item.get('last_check_at') or '',

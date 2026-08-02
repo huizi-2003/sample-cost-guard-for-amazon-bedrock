@@ -17,13 +17,6 @@ Parameters:
       Commit SHA or tag to deploy. Leave EMPTY to auto-resolve the latest
       published GitHub Release (recommended). The auto-updater always pins an
       explicit SHA here. Set a value manually only to deploy a specific version.
-  AutoUpgradeEnabled:
-    Type: String
-    Default: 'true'
-    AllowedValues: ['true', 'false']
-    Description: >
-      Automatically check for new GitHub Releases every week and upgrade the
-      whole stack. Can also be toggled later from the Web Console.
   Version:
     Type: String
     Default: '1'
@@ -490,7 +483,6 @@ Resources:
           STACK_NAME: !Ref "AWS::StackName"
           GITHUB_OWNER: !Ref GitHubOwner
           GITHUB_REPO: !Ref GitHubRepo
-          AUTO_UPGRADE_DEFAULT: !Ref AutoUpgradeEnabled
 
   # ===== EventBridge Schedules =====
   MonitorSchedule:
@@ -932,7 +924,6 @@ Resources:
           CODE_BUCKET: !Ref CodeBucket
           STACK_UPDATE_ROLE_ARN: !GetAtt StackUpdateRole.Arn
           WEB_FUNCTION_NAME: !Sub "${AWS::StackName}-web"
-          AUTO_UPGRADE_DEFAULT: !Ref AutoUpgradeEnabled
 
   UpdaterSchedule:
     Type: AWS::Events::Rule

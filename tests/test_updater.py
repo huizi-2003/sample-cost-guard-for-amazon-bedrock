@@ -270,21 +270,40 @@ class TestGating:
         assert 'UPDATE_IN_PROGRESS' in result['reason']
 
     @patch.dict(os.environ, ENV)
+    @patch('updater.handler.record_history')
     @patch('updater.handler.save_config')
+    @patch('updater.handler._finish', return_value={'status': 'SUCCESS'})
+    @patch('updater.handler._apply_revision', return_value=(True, {'changeset_name': 'cs'}))
+    @patch('updater.handler.compare_commits')
     @patch('updater.handler.get_latest_release')
     @patch('updater.handler.get_current_version', return_value=('', ''))
     @patch('updater.handler.get_config', return_value=dict(BASE_CFG))
     @patch('updater.handler.boto3.client')
-    def test_unknown_current_version_blocks(self, mock_boto, mock_cfg, mock_ver,
-                                            mock_rel, mock_save):
-        """无法确定当前版本（build_info 缺失）→ 不敢自动升级。"""
+    def test_unknown_current_version_upgrades_to_latest(
+            self, mock_boto, mock_cfg, mock_ver, mock_rel, mock_cmp,
+            mock_apply, mock_finish, mock_save, mock_hist):
+        """当前版本未知（build_info 缺失）→ 视为过期，直接升到最新 Release。
+
+        旧行为是阻断，但那会让早于本功能的部署永久卡住、无法自愈。
+        没有基准 SHA 时做不了方向判定，所以此路径不调 compare。
+        """
         mock_cfn = MagicMock()
         mock_cfn.describe_stacks.return_value = {'Stacks': [_stack()]}
         mock_boto.return_value = mock_cfn
-        mock_rel.return_value = {'sha': 'newsha', 'tag': 'v2', 'notes': '', 'published_at': ''}
+        mock_rel.return_value = {'sha': 'newsha', 'tag': 'v20260802',
+                                 'notes': '- 首个正式版本', 'published_at': ''}
 
         result = up.check_and_upgrade({}, _ctx())
-        assert result['status'] == up.STATUS_BLOCKED
+
+        assert result['status'] == 'SUCCESS'
+        mock_apply.assert_called_once()
+        # 目标是最新 Release 的 SHA
+        assert mock_apply.call_args[0][7] == 'newsha'
+        # 无基准版本，不做方向判定
+        mock_cmp.assert_not_called()
+        # changelog 退化为 Release notes
+        assert mock_hist.call_args.kwargs['changelog'] == '- 首个正式版本'
+        assert mock_hist.call_args.kwargs['commit_count'] == 0
 
 
 # ===== 参数构造 =====

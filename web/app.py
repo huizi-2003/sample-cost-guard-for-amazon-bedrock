@@ -1009,8 +1009,9 @@ async def get_version_info():
         # 页面只做"是否相同"的粗判：维护者的 release 是单调向前的，所以
         # tag/SHA 不同即视为有新版本。真正决定能否升级的严格方向判定
         # （ahead / behind / diverged）在 Updater 里做，见 common/release.compare_commits。
-        if commit_sha and latest.get('sha'):
-            result['has_update'] = (latest['sha'] != commit_sha)
+        # 本地版本未知时视为过期，与 Updater 的处理保持一致。
+        if latest.get('sha'):
+            result['has_update'] = (latest['sha'] != commit_sha) if commit_sha else True
 
     # 自动升级状态
     try:
