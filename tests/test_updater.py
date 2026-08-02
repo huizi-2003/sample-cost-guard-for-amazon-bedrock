@@ -495,6 +495,7 @@ class TestAutoRollback:
         assert mock_save.call_args.kwargs['current_upgrade_id'] == rb_id
         assert mock_notify.call_count >= 1
 
+    @patch('updater.handler._claim_rollback', return_value=('claimed', {}))
     @patch.dict(os.environ, ENV)
     @patch('updater.handler.notify')
     @patch('updater.handler.record_history')
@@ -504,7 +505,8 @@ class TestAutoRollback:
     @patch('updater.handler.boto3.client')
     @patch('updater.handler.health_check', return_value=(True, 'ok'))
     def test_rollback_action_applies_good_sha(self, mock_health, mock_boto, mock_apply,
-                                              mock_cfg, mock_save, mock_hist, mock_notify):
+                                              mock_cfg, mock_save, mock_hist, mock_notify,
+                                              mock_claim):
         """rollback 这一跳把栈更新回 good_sha，健康检查通过后记为 ROLLED_BACK。"""
         mock_cfn = MagicMock()
         mock_cfn.describe_stacks.return_value = {'Stacks': [_stack('UPDATE_COMPLETE')]}

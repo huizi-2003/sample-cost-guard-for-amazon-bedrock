@@ -35,6 +35,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 
 import boto3
@@ -44,6 +45,9 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from common.config import (
+    AUTO_UPGRADE_SK,
+    UPGRADE_HISTORY_PK,
+    _get_table as _get_config_table,
     get_auto_upgrade_config as get_config,
     get_upgrade_history as get_history,
     get_webhook_config,
@@ -68,6 +72,11 @@ STATUS_ROLLED_BACK = 'ROLLED_BACK'
 STATUS_ROLLBACK_FAILED = 'ROLLBACK_FAILED'
 STATUS_BLOCKED = 'BLOCKED'
 STATUS_SKIPPED = 'SKIPPED'
+STATUS_IGNORED = 'IGNORED'
+
+# 当前 Lambda invocation 持有的升级锁。Lambda 执行环境会复用，因此 handler
+# 每次入口必须重置；只有成功写入锁或承接对应 upgrade_id 的续跑调用后才赋值。
+_OWNED_LOCK_ID = None
 
 # 有状态资源：CloudFormation 变更集里若要删除或替换它们，一律拒绝自动执行。
 # 按 LogicalId 和资源类型双重判定，这样即使将来改了 LogicalId 也拦得住。
@@ -134,6 +143,73 @@ def _env(name, default=''):
 # ===== 配置读写 =====
 # get_config / save_config / record_history / get_history 均来自 common.config，
 # 与 Web Lambda 共用同一份实现，避免两侧对 DDB 结构的理解漂移。
+
+
+def _get_upgrade_record(upgrade_id):
+    """强一致读取一条升级历史，用于判断条件写失败的具体原因。"""
+    resp = _get_config_table().get_item(
+        Key={'PK': UPGRADE_HISTORY_PK, 'SK': upgrade_id}, ConsistentRead=True)
+    return resp.get('Item') or {}
+
+
+def _claim_rollback(upgrade_id, target_sha):
+    """原子校验并认领回退；返回 claimed / duplicate / invalid。"""
+    claim_id = uuid.uuid4().hex
+    try:
+        _get_config_table().update_item(
+            Key={'PK': UPGRADE_HISTORY_PK, 'SK': upgrade_id},
+            UpdateExpression='SET rollback_claim_id = :claim_id',
+            ConditionExpression=(
+                'is_rollback = :is_rollback AND #status = :status '
+                'AND to_sha = :target_sha AND attribute_not_exists(rollback_claim_id)'
+            ),
+            ExpressionAttributeNames={'#status': 'status'},
+            ExpressionAttributeValues={
+                ':claim_id': claim_id,
+                ':is_rollback': 'true',
+                ':status': STATUS_UPDATING,
+                ':target_sha': target_sha,
+            },
+        )
+        return 'claimed', {}
+    except ClientError as exc:
+        if exc.response.get('Error', {}).get('Code') != 'ConditionalCheckFailedException':
+            raise
+
+    # 条件失败不一定是伪造：也可能是 at-least-once 的另一份投递已认领。
+    record = _get_upgrade_record(upgrade_id)
+    expected = (
+        record.get('is_rollback') == 'true'
+        and record.get('status') == STATUS_UPDATING
+        and record.get('to_sha') == target_sha
+    )
+    if expected and record.get('rollback_claim_id'):
+        return 'duplicate', record
+    return 'invalid', record
+
+
+def _release_owned_lock(upgrade_id, error):
+    """仅当 DDB 当前锁仍属于 upgrade_id 时原子清锁，避免 TOCTOU。"""
+    try:
+        _get_config_table().update_item(
+            Key={'PK': 'CONFIG', 'SK': AUTO_UPGRADE_SK},
+            UpdateExpression=(
+                'SET current_upgrade_id = :empty, last_status = :failed, '
+                'last_error = :error'
+            ),
+            ConditionExpression='current_upgrade_id = :upgrade_id',
+            ExpressionAttributeValues={
+                ':empty': '',
+                ':failed': STATUS_FAILED,
+                ':error': error,
+                ':upgrade_id': upgrade_id,
+            },
+        )
+        return True
+    except ClientError as exc:
+        if exc.response.get('Error', {}).get('Code') == 'ConditionalCheckFailedException':
+            return False
+        raise
 
 
 # ===== 当前版本 =====
@@ -560,8 +636,9 @@ def _ctx_from_env(raw):
 
     watch 和 rollback 都由异步自调用触发，而 Lambda 的调用入口不止自己一个。
     owner / repo / bucket / role_arn 决定了"从哪拉代码、用什么权限改栈"，
-    这些必须来自模板注入的环境变量；event 里只保留每次升级独有的版本信息，
-    它们本身不扩大权限（target_sha 仍要过 compare / 安全检查 / 健康检查）。
+    这些必须来自模板注入的环境变量。event 中的版本信息只用于标识已创建的
+    升级流程；rollback 不做方向 compare，因此执行前还必须与 DDB 中对应的
+    回退历史绑定，不能仅凭事件里的 target_sha 执行。
     """
     return {
         'target_sha': raw.get('target_sha', ''),
@@ -580,6 +657,8 @@ def _ctx_from_env(raw):
 # ===== 主流程 =====
 
 def check_and_upgrade(event, context):
+    global _OWNED_LOCK_ID
+
     forced = event.get('action') == 'upgrade_now'
     stack_name = _env('STACK_NAME')
     owner = _env('GITHUB_OWNER')
@@ -670,6 +749,7 @@ def check_and_upgrade(event, context):
     save_config(last_check_at=now_iso, last_status=STATUS_UPDATING,
                 last_error='', current_upgrade_id=upgrade_id,
                 last_known_good_sha=cfg['last_known_good_sha'] or current_sha)
+    _OWNED_LOCK_ID = upgrade_id
 
     ok, info = _apply_revision(cfn, s3, stack_name, owner, repo, bucket, region,
                                target_sha, role_arn,
@@ -703,9 +783,12 @@ def check_and_upgrade(event, context):
 
 def watch(event, context):
     """续跑：继续观察一次已经在执行中的栈更新。"""
+    global _OWNED_LOCK_ID
+
     ctx_info = _ctx_from_env(event.get('ctx') or {})
     ctx_info['hop'] = event.get('hop', 0)
     upgrade_id = event.get('upgrade_id') or _iso()
+    _OWNED_LOCK_ID = upgrade_id
     return _finish(_cfn_client(), _lambda_client(), _env('STACK_NAME'),
                    upgrade_id, ctx_info, context)
 
@@ -717,11 +800,37 @@ def rollback(event, context):
     完整的整栈更新（下载模板 + 建变更集 + 等就绪 + 执行 + 观察），塞不进
     上一跳剩下的那点收尾时间。状态在触发前已经落库，这里只管执行。
     """
+    global _OWNED_LOCK_ID
+
     ctx_info = _ctx_from_env(event.get('ctx') or {})
     ctx_info['is_rollback'] = True
-    upgrade_id = event.get('upgrade_id') or _iso()
+    upgrade_id = event.get('upgrade_id') or ''
     stack_name = _env('STACK_NAME')
     good_sha = ctx_info['target_sha']
+
+    # rollback 没有 compare 方向检查，必须把事件与 _finish 预写的回退记录
+    # 原子绑定；同一条件写也让 at-least-once 的重复投递只有一个执行者。
+    if not upgrade_id or not good_sha:
+        reason = '回退请求缺少 upgrade_id 或 target_sha，忽略'
+        logger.warning(reason)
+        return {'status': STATUS_IGNORED, 'reason': reason}
+
+    claim_result, record = _claim_rollback(upgrade_id, good_sha)
+    if claim_result == 'duplicate':
+        return {
+            'status': STATUS_SKIPPED,
+            'reason': '回退请求已由另一 invocation 认领，忽略重复投递',
+        }
+    if claim_result != 'claimed':
+        reason = '回退请求与已落库的升级记录不匹配，忽略'
+        logger.warning(
+            f'{reason}: upgrade_id={upgrade_id!r}, target_sha={good_sha!r}, '
+            f'record_status={record.get("status")!r}, '
+            f'record_to_sha={record.get("to_sha")!r}')
+        return {'status': STATUS_IGNORED, 'reason': reason}
+
+    # 只有完成 DDB 原子认领的 invocation 才有资格在异常时释放该流程的锁。
+    _OWNED_LOCK_ID = upgrade_id
 
     def _fail(err):
         logger.error(err)
@@ -731,15 +840,16 @@ def rollback(event, context):
         notify(f'🚨 Bedrock Cost Guard 自动回退失败，请人工介入\n{err}')
         return {'status': STATUS_ROLLBACK_FAILED, 'error': err}
 
-    if not good_sha:
-        return _fail('回退请求缺少目标版本（target_sha 为空）')
-
     cfn = _cfn_client()
-    # 上一跳的栈更新已经到终态才会走到回退，但异步调用可能重复投递，
-    # 这里再确认一次，避免在 CloudFormation 已经忙起来时叠加变更集。
+    # 原子认领已过滤同一 rb_id 的重复投递；若此处仍 busy，通常是外部
+    # CloudFormation 操作恰好抢先。按保守策略不改历史、不清锁，最终由六小时
+    # 锁失效机制恢复，避免把可能正在执行的栈操作误报为回退失败。
     status, _ = _stack_status(cfn, stack_name)
     if _is_busy(status):
-        return _fail(f'栈当前状态 {status}，无法执行回退')
+        return {
+            'status': STATUS_SKIPPED,
+            'reason': f'栈状态 {status}，暂不执行回退',
+        }
 
     ok, info = _apply_revision(cfn, _s3_client(), stack_name, ctx_info['owner'],
                                ctx_info['repo'], ctx_info['bucket'], ctx_info['region'],
@@ -757,32 +867,40 @@ def rollback(event, context):
 
 
 def _release_lock(action, exc):
-    """未捕获异常时释放升级锁并告警。
+    """未捕获异常时仅释放当前 invocation 自己持有的升级锁并告警。
 
-    没有这一步，current_upgrade_id 会永远留在 DDB：「立即升级」永久 409，
-    前端还一直显示"正在更新"（失败原因只在 in_progress 为假时才渲染），
-    对用户就是"按钮坏了且看不到原因"。
+    没有这一步，持锁流程异常时 current_upgrade_id 会一直留在 DDB；但不能
+    根据"DDB 里现在有什么"释放锁，否则无锁的并发 check 会误杀另一次正常
+    升级。Lambda 超时不会进入 except，仍由锁的失效判定兜底。
 
-    清理动作自身全部包在 try 里——清理失败不能盖掉原始异常，那才是根因。
-    注意这里救不了 Lambda 超时被掐（运行时直接终止，不走 except），
-    那种情况靠 common.config 里 current_upgrade_id 的失效判定兜底。
+    锁释放使用 DDB 条件更新，避免“读到自己的锁后、写入前被新锁替换”的
+    TOCTOU。清理失败不能盖掉原始异常，那才是根因。
     """
+    msg = f'升级流程异常中断（action={action}）: {exc}'
+    logger.exception(msg)
     try:
-        msg = f'升级流程异常中断（action={action}）: {exc}'
-        logger.exception(msg)
-        upgrade_id = get_config().get('current_upgrade_id') or ''
-        if upgrade_id:
+        released = bool(_OWNED_LOCK_ID) and _release_owned_lock(_OWNED_LOCK_ID, msg)
+        if released:
             # merge 而非覆盖：record_upgrade 是整条 put，直接写会把 changelog、
             # from_sha 等诊断信息抹掉。
-            merge_history(upgrade_id, status=STATUS_FAILED, error=msg, finished_at=_iso())
-        save_config(last_status=STATUS_FAILED, last_error=msg, current_upgrade_id='')
-        notify(f'⚠️ Bedrock Cost Guard 自动升级异常中断\n{msg}\n'
-               f'请在 CloudFormation 控制台确认栈状态。')
-    except Exception as e:  # noqa: BLE001 - 原始异常优先
-        logger.error(f'异常兜底清理自身失败（原始异常仍会抛出）: {e}')
+            merge_history(_OWNED_LOCK_ID, status=STATUS_FAILED, error=msg,
+                          finished_at=_iso())
+        else:
+            logger.warning(
+                f'异常 invocation 不持有当前升级锁，不修改 DDB: '
+                f'owned={_OWNED_LOCK_ID!r}')
+    except Exception as cleanup_exc:  # noqa: BLE001 - 原始异常优先
+        logger.error(f'异常兜底清理自身失败（原始异常仍会抛出）: {cleanup_exc}')
+
+    # 即使 DDB 清理自身失败也要尽量发出原始异常告警；notify 内部自行容错。
+    notify(f'⚠️ Bedrock Cost Guard 自动升级异常中断\n{msg}\n'
+           f'请在 CloudFormation 控制台确认栈状态。')
 
 
 def handler(event, context):
+    global _OWNED_LOCK_ID
+    _OWNED_LOCK_ID = None  # Lambda 执行环境复用，不能继承上次 invocation 的锁
+
     event = event or {}
     action = event.get('action') or 'check'
     logger.info(f'updater action={action}')
