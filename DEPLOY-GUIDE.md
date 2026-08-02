@@ -4,6 +4,8 @@
 
 Bedrock 用量管控工具——帮你监控 Claude 等模型的调用费用，防盗刷 + 每日自动对账 + Web 管理界面。
 
+本文是面向使用者的快速部署指南；架构说明、参数详解、自动更新的安全设计和 fork 维护者指南见 [README](README.md)。
+
 ## 费用
 
 纯 Serverless 架构（Lambda + DynamoDB + API Gateway + EventBridge），**无 EC2、无常驻实例**。  
@@ -19,11 +21,7 @@ Bedrock 用量管控工具——帮你监控 Claude 等模型的调用费用，�
 
 ### 2. 获取你的公网 IP
 
-```bash
-curl -s https://checkip.amazonaws.com
-```
-
-记下输出的 IP（例如 `52.83.xxx.xxx`），后面要用。
+> 💡 **获取你的公网 IP**：浏览器打开 https://checkip.amazonaws.com/ ，显示的即为你的出口 IP，填入 `AllowedCidrs` 时加上 `/32` 后缀。注意：如果使用 CloudShell 部署，不要在 CloudShell 里 curl 这个地址——那拿到的是 AWS 的 IP，不是你浏览器的。
 
 ### 3. 部署
 
@@ -62,8 +60,8 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
 
 部署后系统会自动：
 - 每 5 分钟监控 Bedrock 用量（超阈值推送告警）
-- 每天凌晨 01:00（北京时间）自动对账
-- 每周一上午 11:00（北京时间）检查并安装新版本
+- 每天 UTC 01:00（北京时间 09:00）自动对账
+- 每周一 UTC 03:00（北京时间 11:00）检查并安装新版本
 
 ## 后续更新
 
@@ -84,6 +82,34 @@ aws cloudformation deploy \
   --parameter-overrides SourceRevision=<commit sha 或 tag> \
   --capabilities CAPABILITY_NAMED_IAM
 ```
+
+> 第一次自动升级之后，栈会永久关联一个专用的 CloudFormation service role。手工操作（含回退、删栈）的行为和注意事项见 README 的[「手动恢复」](README.md#手动恢复)一节。
+
+## 从旧版本升级
+
+如果你的栈是在自动更新功能发布之前部署的，只需手动升级这一次；完成后，系统会按每周计划自动升级。
+
+升级前请确认目标 GitHub 仓库已经发布至少一个**正式 Release**。上游仓库已满足此前提；如果使用 fork，需要先自行发布 Release。
+
+```bash
+curl -LO https://raw.githubusercontent.com/huizi-2003/sample-cost-guard-for-amazon-bedrock/main/template.yaml
+
+aws cloudformation deploy \
+  --template-file template.yaml \
+  --stack-name bedrock-cost-guard \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+注意：
+
+1. 不需要传任何 `--parameter-overrides`：白名单等原有参数会自动沿用；已删除的旧参数 `Branch` 会自动丢弃；新增的 `SourceRevision` 留空后会自动解析最新正式 Release。
+2. `--capabilities` 必须是 `CAPABILITY_NAMED_IAM`。旧文档中的 `CAPABILITY_IAM` 会导致 `InsufficientCapabilities`，因为这次更新会把 IAM 角色替换为显式命名的角色。
+3. 使用你自己的 AWS 凭证执行，不要传 `--role-arn`。
+
+常见报错：
+
+- `InsufficientCapabilities`：`--capabilities` 参数写错了，请使用 `CAPABILITY_NAMED_IAM`。
+- CloudFormation 事件中出现 `has no published GitHub Release`：目标仓库还没有正式 Release。请先发布 Release，或临时在上述部署命令中加入 `--parameter-overrides SourceRevision=<commit sha>`，将版本固定到指定提交。
 
 ## 删除
 

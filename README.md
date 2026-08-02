@@ -366,21 +366,7 @@ CloudWatch 成本 ≈ 轮询频率 × Region 数 × 各 Region 活跃模型数 �
 
 ### 方式二：CLI 部署（CloudShell 或本地终端）
 
-在 [CloudShell](https://console.aws.amazon.com/cloudshell/) 或本地终端（需安装 AWS CLI 并配置凭证）中执行：
-
-```bash
-# 克隆代码
-git clone https://github.com/huizi-2003/sample-cost-guard-for-amazon-bedrock.git
-cd sample-cost-guard-for-amazon-bedrock
-
-# 部署（将 AllowedCidrs 改为你的出口 IP，多个用逗号分隔）
-aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard --parameter-overrides AllowedCidrs=1.2.3.4/32 --capabilities CAPABILITY_NAMED_IAM
-
-# 查看部署结果（获取 Web Console URL）
-aws cloudformation describe-stacks --stack-name bedrock-cost-guard --query 'Stacks[0].Outputs'
-```
-
-> CloudShell 会话闲置 20 分钟会断开，但不影响 CloudFormation 部署（后台异步执行）。
+CLI / CloudShell 部署的分步指引（含从旧版本升级）见 [DEPLOY-GUIDE.md](DEPLOY-GUIDE.md)。
 
 ### 参数说明
 
@@ -441,18 +427,25 @@ Updater Lambda 检查最新 Release
 
 ### 手动恢复
 
-自动升级会给栈关联 `StackUpdateRole`。一旦关联，后续操作（包括删栈）默认都用它。如果需要用管理员身份手工干预，显式传 `--role-arn` 覆盖：
+第一次自动升级后，栈会永久关联 `StackUpdateRole`；CloudFormation 后续更新和删除默认继续使用该角色。一般手动回退可以显式复用它：
 
 ```bash
 # 从 Outputs 拿到角色 ARN
-aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
-  --query 'Stacks[0].Outputs[?OutputKey==`StackUpdateRoleArn`].OutputValue' --output text
+STACK_UPDATE_ROLE_ARN=$(aws cloudformation describe-stacks \
+  --stack-name bedrock-cost-guard \
+  --query 'Stacks[0].Outputs[?OutputKey==`StackUpdateRoleArn`].OutputValue' \
+  --output text)
 
 # 回退到指定版本（跳过自动升级逻辑）
-aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard \
+aws cloudformation deploy \
+  --template-file template.yaml \
+  --stack-name bedrock-cost-guard \
   --parameter-overrides SourceRevision=<已知可用的 commit sha> \
-  --capabilities CAPABILITY_NAMED_IAM
+  --capabilities CAPABILITY_NAMED_IAM \
+  --role-arn "$STACK_UPDATE_ROLE_ARN"
 ```
+
+如果 `StackUpdateRole` 本身缺少完成恢复或删栈所需的权限，**只改用管理员凭证执行 CLI 并不会绕过它**。此时需要准备一个允许 `cloudformation.amazonaws.com` 扮演、且权限足够的 CloudFormation service role，并通过 `--role-arn <service-role-arn>` 显式指定。新角色会成为该栈后续操作使用的关联角色，请谨慎操作。
 
 ## 维护者指南（fork 后必读）
 
@@ -524,6 +517,8 @@ cfn-lint template.yaml
 - 自动更新开关
 
 **升级不需要手工操作** —— 系统每周一自动检查 GitHub Release 并整栈升级，失败会自动回退。详见 [自动更新](#自动更新)。
+
+> 以下命令面向 fork 维护者；终端用户的部署、指定版本和删除操作以 [DEPLOY-GUIDE.md](DEPLOY-GUIDE.md) 为准。
 
 ```bash
 # 手动触发一次升级检查（等同于页面上的「立即更新」）
