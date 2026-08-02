@@ -388,7 +388,11 @@ Resources:
       Environment:
         Variables:
           DDB_TABLE: !Ref ConfigTable
-          AGENTCORE_ENDPOINT_ARN: !GetAtt AgentCoreEndpoint.AgentRuntimeEndpointArn
+          # 传 runtime ARN（不带 /runtime-endpoint/ 段），reconciler 会以
+          # qualifier=DEFAULT 调用。DEFAULT 端点由 AgentCore 服务自身维护并
+          # 始终指向最新版本，不经过 CloudFormation，因此代码更新后无需再走
+          # 一次栈更新去同步端点版本。
+          AGENTCORE_ENDPOINT_ARN: !GetAtt AgentCoreRuntime.AgentRuntimeArn
 
   # ===== Lambda: Web Console =====
   WebLambdaRole:
@@ -1029,11 +1033,12 @@ Resources:
         IdleRuntimeSessionTimeout: 300
         MaxLifetime: 1800
 
-  AgentCoreEndpoint:
-    Type: AWS::BedrockAgentCore::RuntimeEndpoint
-    Properties:
-      AgentRuntimeId: !GetAtt AgentCoreRuntime.AgentRuntimeId
-      Name: bedrock_cost_guard_summarizer_ep
+  # 这里刻意不声明 AWS::BedrockAgentCore::RuntimeEndpoint。
+  # 具名端点不会跟随 runtime 版本走：它的 TargetVersion/LiveVersion 在
+  # CloudFormation 资源 schema 里是只读的，无法声明式地指向"最新"，结果是
+  # runtime 升到新版本后端点仍停在创建时的旧版本，reconciler 一直调用旧代码。
+  # DEFAULT 端点由 AgentCore 服务自身维护并始终指向最新版本，且不属于本栈资源，
+  # 因此也不会在栈更新时引入又一个需要等待稳定的 AgentCore 资源。
 
 Outputs:
   MonitorFunctionName:
@@ -1061,6 +1066,8 @@ Outputs:
   WebConsoleUrl:
     Value: !Sub "https://${WebApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
     Description: Web Console URL
-  AgentCoreEndpointArn:
-    Value: !GetAtt AgentCoreEndpoint.AgentRuntimeEndpointArn
-    Description: AgentCore Runtime Endpoint ARN (for AI billing summary)
+  AgentCoreRuntimeArn:
+    Value: !GetAtt AgentCoreRuntime.AgentRuntimeArn
+    Description: >
+      AgentCore Runtime ARN (for AI billing summary). Invoked with
+      qualifier=DEFAULT, which always tracks the newest runtime version.

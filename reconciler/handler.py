@@ -476,8 +476,11 @@ def _get_ai_summary(report_text, date_str, ai_config):
             'model_id': ai_config['model_id'],
             'prompt': prompt,
         })
-        # endpoint ARN 格式: .../runtime/{id}/runtime-endpoint/{ep_name}
-        # invoke_agent_runtime 需要 runtime ARN + qualifier（endpoint 名称）
+        # AGENTCORE_ENDPOINT_ARN 接受两种形式：
+        #   runtime ARN            .../runtime/{id}                        → qualifier=DEFAULT
+        #   endpoint ARN           .../runtime/{id}/runtime-endpoint/{name} → qualifier={name}
+        # 模板传的是前者：DEFAULT 端点始终指向最新 runtime 版本，无需栈更新同步。
+        # 后者保留兼容，便于手工指定具名端点做灰度。
         parts = endpoint_arn.split('/runtime-endpoint/')
         runtime_arn = parts[0]  # .../runtime/{id}
         qualifier = parts[1] if len(parts) > 1 else 'DEFAULT'

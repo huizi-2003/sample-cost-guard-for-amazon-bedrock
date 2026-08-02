@@ -6,6 +6,7 @@ Covers:
     * derives the AgentCore client region from the endpoint ARN (not hardcoded us-east-1)
     * falls back to AWS_REGION when the ARN region segment is empty
     * splits the endpoint ARN into runtime ARN + qualifier and sends model_id/prompt
+    * uses qualifier=DEFAULT when given a bare runtime ARN (the form the template injects)
     * parses plain text / JSON {"result": ...} / JSON string responses
     * returns None (does not crash the daily report) on any exception
 - handler AI gating:
@@ -28,6 +29,14 @@ EP_ARN = (
     "arn:aws:bedrock-agentcore:ap-northeast-1:123456789012:"
     "runtime/bedrock_cost_guard_summarizer-abc/"
     "runtime-endpoint/bedrock_cost_guard_summarizer_ep"
+)
+
+# 模板实际注入的形式：只有 runtime ARN，没有 /runtime-endpoint/ 段。
+# 这样 _get_ai_summary 会以 qualifier=DEFAULT 调用，而 DEFAULT 端点由
+# AgentCore 服务维护并始终指向最新 runtime 版本。
+RUNTIME_ARN = (
+    "arn:aws:bedrock-agentcore:ap-northeast-1:123456789012:"
+    "runtime/bedrock_cost_guard_summarizer-abc"
 )
 
 
@@ -94,6 +103,30 @@ class TestGetAiSummary:
         payload = json.loads(kwargs['payload'].decode('utf-8'))
         assert payload['model_id'] == 'us.amazon.nova-2-lite-v1:0'
         assert 'REPORT-BODY' in payload['prompt']
+
+    @patch('reconciler.handler.boto3')
+    def test_bare_runtime_arn_uses_default_qualifier(self, mock_boto3):
+        """模板注入的是 runtime ARN（无 /runtime-endpoint/ 段）→ qualifier=DEFAULT。
+
+        DEFAULT 端点由 AgentCore 维护并始终指向最新 runtime 版本；具名端点的
+        TargetVersion/LiveVersion 在 CloudFormation 里是只读的，无法声明式跟随
+        最新版本，会导致 runtime 升级后 reconciler 仍调用旧代码。
+        """
+        from reconciler.handler import _get_ai_summary
+        mock_client = MagicMock()
+        mock_client.invoke_agent_runtime.return_value = _mock_invoke_response(b"ok")
+        mock_boto3.client.return_value = mock_client
+
+        with patch.dict(os.environ, {'AGENTCORE_ENDPOINT_ARN': RUNTIME_ARN}, clear=True):
+            out = _get_ai_summary("REPORT-BODY", "2026-07-20", {'model_id': 'm'})
+
+        assert out == "ok"
+        kwargs = mock_client.invoke_agent_runtime.call_args[1]
+        # runtime ARN 原样传入，未被截断
+        assert kwargs['agentRuntimeArn'] == RUNTIME_ARN
+        assert kwargs['qualifier'] == 'DEFAULT'
+        # region 仍从 ARN 第 4 段解析，不受缺少 endpoint 段影响
+        mock_boto3.client.assert_called_once_with('bedrock-agentcore', region_name='ap-northeast-1')
 
     @patch('reconciler.handler.boto3')
     def test_parses_json_result_field(self, mock_boto3):
