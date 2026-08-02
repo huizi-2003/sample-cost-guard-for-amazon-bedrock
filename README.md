@@ -494,11 +494,24 @@ GitHub Actions（.github/workflows/release.yml）自动跑 cfn-lint + pytest
 
 想先在自己的栈上验证再放给用户：把 Release 勾选为 **prerelease**。`/releases/latest` 会跳过它，普通用户看不见；你自己的测试栈用 `SourceRevision=<该 tag>` 显式部署即可。
 
+### 改模板时的一条硬规则
+
+**任何需要 `StackUpdateRole` 新增权限才能创建的资源，必须显式写 `DependsOn: StackUpdateRole`。**
+
+原因：自动升级时改栈的不是 Updater，而是 CloudFormation 扮演的 `StackUpdateRole`，而执行本次变更集的是**升级前**那个还没有新权限的角色版本。同一个变更集里既要给角色加权限、又要用这个权限建资源，顺序错了就是 AccessDenied → 整栈回滚。
+
+举例：`UpdaterAsyncConfig`（`AWS::Lambda::EventInvokeConfig`）需要 `lambda:PutFunctionEventInvokeConfig`，所以它同时依赖 `StackUpdateRole`。
+
+两个容易踩的坑：
+
+- **别指望拆成两个 Release 解决。** Updater 只跳到**最新** Release，不逐个走。停在旧版本的用户会直接跳到最新版，把中间那个"只加权限"的版本整个跳过，面对的还是同一个合并变更集。`DependsOn` 对任意跳版路径都成立，两段发布不成立。
+- **权限要覆盖完整生命周期，不只是 create。** CloudFormation 对同一资源的 create / update / read / delete 往往调不同的 API（例如 EventInvokeConfig 的 update 用 `UpdateFunctionEventInvokeConfig` 而非 `Put`）。缺 update 权限，以后改一个属性就升级失败；缺 delete 权限更糟——service role 一旦关联就永久黏在栈上、删栈也走它，会变成 `DELETE_FAILED`，一个删不掉的栈比升级失败难处理得多。
+
 ### 本地开发
 
 ```bash
 pip install -r requirements-dev.txt -r web/requirements.txt
-python -m pytest tests/ -q      # 417 个测试
+python -m pytest tests/ -q      # 418 个测试
 cfn-lint template.yaml
 ```
 

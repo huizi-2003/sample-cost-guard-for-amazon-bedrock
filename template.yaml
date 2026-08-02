@@ -763,10 +763,15 @@ Resources:
                   - lambda:UntagResource
                   - lambda:ListTags
                   - lambda:InvokeFunction
-                  # AWS::Lambda::EventInvokeConfig（UpdaterAsyncConfig）需要这三个。
-                  # 缺了会让引入该资源的那次自动升级 AccessDenied 后整栈回滚。
+                  # AWS::Lambda::EventInvokeConfig（UpdaterAsyncConfig）的完整生命周期。
+                  # 四个都要：CFn 的 create 用 Put、update 用 Update（不是 Put）、
+                  # read/drift 用 Get、delete 用 Delete。只给 Put 的话，改一次
+                  # MaximumRetryAttempts 就会在 update 时 AccessDenied；缺 Delete
+                  # 更糟——service role 一旦关联就永久黏在栈上、删栈也走它，
+                  # 那会变成 DELETE_FAILED，一个删不掉的栈比升级失败难处理得多。
                   - lambda:GetFunctionEventInvokeConfig
                   - lambda:PutFunctionEventInvokeConfig
+                  - lambda:UpdateFunctionEventInvokeConfig
                   - lambda:DeleteFunctionEventInvokeConfig
                 Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-*"
               # --- DynamoDB（仅本表；删除/替换由 Updater 的安全检查另行拦截）---
@@ -930,8 +935,15 @@ Resources:
   # handler 的顶层兜底之后仍然 re-raise（为了保留 CloudWatch Errors 指标），
   # 默认的 2 次重试会把一次崩溃变成三遍兜底、三条相同的告警。
   # 关掉重试后 re-raise 就是纯收益：指标照常记，通知只发一次。
-  # DependsOn StackUpdateRole：自动升级时是 CloudFormation 扮演该角色执行的，
-  # 得先把 lambda:PutFunctionEventInvokeConfig 加上去，再创建这个资源。
+  #
+  # DependsOn StackUpdateRole 是一条通用规则，不是这里的特例：自动升级时改栈
+  # 的是 CloudFormation 扮演的 StackUpdateRole，而执行本次变更集的是**升级前**
+  # 那个还没有新权限的角色版本。任何需要该角色新增权限才能创建的资源，都必须
+  # 显式 DependsOn: StackUpdateRole，保证"先加权限、再用权限"。
+  # （不能靠拆成两个 Release 解决——Updater 只跳到最新 Release，跳版升级会把
+  # 中间那个只加权限的版本整个跳过。见 README 的维护者指南。）
+  # 剩余风险只有 IAM 策略的最终一致性延迟，而 FunctionName: !Ref UpdaterFunction
+  # 已经把本资源排在 CodeObject（pip install，分钟级）之后，传播窗口足够。
   UpdaterAsyncConfig:
     Type: AWS::Lambda::EventInvokeConfig
     DependsOn: StackUpdateRole
