@@ -17,6 +17,14 @@ Parameters:
       Commit SHA or tag to deploy. Leave EMPTY to auto-resolve the latest
       published GitHub Release (recommended). The auto-updater always pins an
       explicit SHA here. Set a value manually only to deploy a specific version.
+  ReleaseTag:
+    Type: String
+    Default: ''
+    Description: >
+      Release tag that SourceRevision belongs to. Display only - it is what the
+      console shows as the current version. The auto-updater fills this in,
+      because a pinned commit SHA carries no version name of its own. Leave
+      EMPTY unless you also pin SourceRevision to a raw SHA.
   Version:
     Type: String
     Default: '1'
@@ -111,18 +119,27 @@ Resources:
           import urllib.request, urllib.error, boto3, zipfile, io, subprocess, tempfile, os, json, datetime, re, hashlib
           GH_API = 'https://api.github.com'
           SHA_RE = re.compile(r'^[0-9a-f]{7,40}$')
+          # tag 会被原样写进 build_info.py 的源码，含引号或换行的 tag 名足以注入代码。
+          # 所以凡是要落进 build_info 的版本名都先过这个白名单。
+          TAG_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$')
+          def _safe_tag(t):
+              t = (t or '').strip()
+              return t if TAG_RE.match(t) else ''
           def _api(url, sha=False):
               hdr = {'User-Agent': 'cfn-bootstrap',
                      'Accept': 'application/vnd.github.sha' if sha else 'application/vnd.github+json'}
               req = urllib.request.Request(url, headers=hdr)
               return urllib.request.urlopen(req, timeout=30).read().decode('utf-8', 'replace')
-          def _resolve(owner, repo, revision):
+          def _resolve(owner, repo, revision, tag_hint=''):
               # 返回 (sha, tag)。SourceRevision 为空时解析最新正式 Release。
               # 注意：release 的 target_commitish 常常是分支名而非 SHA，不可直接使用，
               # 必须再解析一次 tag 才能拿到不可变的 commit SHA。
               if revision:
                   sha = _api('%s/repos/%s/%s/commits/%s' % (GH_API, owner, repo, revision), sha=True).strip()
-                  return sha, ('' if SHA_RE.match(revision) else revision)
+                  # 裸 SHA 自身不含版本名，只能用调用方给的 tag_hint（Updater 升级时
+                  # 会把目标 Release 的 tag 一起写进 ReleaseTag 参数），否则页面上的
+                  # "当前版本"就只能显示一串 SHA。
+                  return sha, (_safe_tag(tag_hint) if SHA_RE.match(revision) else _safe_tag(revision))
               try:
                   data = json.loads(_api('%s/repos/%s/%s/releases/latest' % (GH_API, owner, repo)))
               except urllib.error.HTTPError as e:
@@ -132,9 +149,10 @@ Resources:
                           'not branches. Create a Release in that repo first, or set the '
                           'SourceRevision parameter to a specific commit SHA.' % (owner, repo))
                   raise
-              tag = (data.get('tag_name') or '').strip()
+              # 先过白名单再拼 URL：tag_name 同样是外部输入。
+              tag = _safe_tag(data.get('tag_name'))
               if not tag:
-                  raise Exception('latest release of %s/%s has no tag_name' % (owner, repo))
+                  raise Exception('latest release of %s/%s has no usable tag_name' % (owner, repo))
               sha = _api('%s/repos/%s/%s/commits/%s' % (GH_API, owner, repo, tag), sha=True).strip()
               return sha, tag
           def _send(event, context, status, data, reason=None):
@@ -201,7 +219,8 @@ Resources:
                   # SourceRevision 为空 → 跟随最新正式 Release；非空 → 精确部署该版本。
                   # 无论哪条路径，最终都锁定到不可变的 commit SHA 再下载，
                   # 绝不使用 refs/heads/<branch>.zip 这类会移动的引用。
-                  sha, tag = _resolve(owner, repo, (p.get('SourceRevision') or '').strip())
+                  sha, tag = _resolve(owner, repo, (p.get('SourceRevision') or '').strip(),
+                                      (p.get('ReleaseTag') or '').strip())
                   src_url = 'https://github.com/%s/%s/archive/%s.zip' % (owner, repo, sha)
                   print('resolved revision: sha=%s tag=%s' % (sha, tag))
                   req = urllib.request.Request(src_url, headers={'User-Agent': 'cfn-bootstrap'})
@@ -366,6 +385,8 @@ Resources:
       # 空 = 解析最新正式 Release；非空 = 精确部署该 SHA/tag。
       # 自动升级时 Updater 总是写入明确的 SHA，因此这个属性变化会触发重新拉取代码。
       SourceRevision: !Ref SourceRevision
+      # SourceRevision 钉成裸 SHA 时，版本名只能由外部告知（见 ReleaseTag 参数）。
+      ReleaseTag: !Ref ReleaseTag
       Bucket: !Ref CodeBucket
       Key: lambda.zip
       Version: !Ref Version

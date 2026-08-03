@@ -387,6 +387,60 @@ class TestBuildParameters:
         assert 'SourceRevision' in keys
         assert 'AllowedCidrs' in keys
 
+    def test_release_tag_set_explicitly_when_target_declares_it(self):
+        """页面上的"当前版本"靠这个参数才有版本名可显示。"""
+        mock_cfn = MagicMock()
+        mock_cfn.validate_template.return_value = {'Parameters': [
+            {'ParameterKey': 'SourceRevision'}, {'ParameterKey': 'ReleaseTag'},
+            {'ParameterKey': 'AllowedCidrs'}]}
+        params = up._build_parameters(mock_cfn, _stack(), 'https://s3/t.yaml',
+                                      'targetsha', 'v2026.08.03.1')
+
+        tag = [p for p in params if p['ParameterKey'] == 'ReleaseTag'][0]
+        assert tag['ParameterValue'] == 'v2026.08.03.1'
+        assert 'UsePreviousValue' not in tag
+
+    def test_release_tag_skipped_when_target_lacks_it(self):
+        """升级到还没有 ReleaseTag 参数的旧模板时，传了会直接报
+        "Parameters: [ReleaseTag] do not exist in the template"。"""
+        mock_cfn = MagicMock()
+        mock_cfn.validate_template.return_value = {'Parameters': [
+            {'ParameterKey': 'SourceRevision'}, {'ParameterKey': 'AllowedCidrs'}]}
+        params = up._build_parameters(mock_cfn, _stack(), 'https://s3/t.yaml',
+                                      'targetsha', 'v2026.08.03.1')
+        assert 'ReleaseTag' not in {p['ParameterKey'] for p in params}
+
+    def test_release_tag_not_duplicated_when_already_on_stack(self):
+        """第二次升级时栈上已经有 ReleaseTag 了，重复传同一个 key 会被
+        CloudFormation 拒绝。"""
+        mock_cfn = MagicMock()
+        mock_cfn.validate_template.return_value = {'Parameters': [
+            {'ParameterKey': 'SourceRevision'}, {'ParameterKey': 'ReleaseTag'},
+            {'ParameterKey': 'AllowedCidrs'}]}
+        stack = _stack(params=[
+            {'ParameterKey': 'AllowedCidrs', 'ParameterValue': '1.2.3.4/32'},
+            {'ParameterKey': 'ReleaseTag', 'ParameterValue': 'v2026.08.02.1'},
+        ])
+        params = up._build_parameters(mock_cfn, stack, 'https://s3/t.yaml',
+                                      'targetsha', 'v2026.08.03.1')
+
+        tags = [p for p in params if p['ParameterKey'] == 'ReleaseTag']
+        assert len(tags) == 1
+        assert tags[0]['ParameterValue'] == 'v2026.08.03.1'
+
+    def test_rollback_clears_release_tag(self):
+        """回退目标没有 tag：必须显式传空，否则页面会一直显示那个失败版本的版本号。"""
+        mock_cfn = MagicMock()
+        mock_cfn.validate_template.return_value = {'Parameters': [
+            {'ParameterKey': 'SourceRevision'}, {'ParameterKey': 'ReleaseTag'}]}
+        stack = _stack(params=[
+            {'ParameterKey': 'ReleaseTag', 'ParameterValue': 'v2026.08.03.1'}])
+        params = up._build_parameters(mock_cfn, stack, 'https://s3/t.yaml', 'goodsha')
+
+        tag = [p for p in params if p['ParameterKey'] == 'ReleaseTag'][0]
+        assert tag['ParameterValue'] == ''
+        assert 'UsePreviousValue' not in tag
+
 
 # ===== 健康检查 =====
 
@@ -813,3 +867,96 @@ class TestReleaseHelpers:
         assert got['ahead_by'] == 2
         # 只取首行，正文不进 changelog
         assert got['commits'] == ['修复账单超时', '优化 IAM 扫描']
+
+
+
+# ===== 模板内联的 CodeFetcher 代码 =====
+
+def _load_code_fetcher():
+    """把 template.yaml 里 CodeFetcherFunction 的内联 Python 抽出来执行。
+
+    这段代码是全项目唯一没有被打包成模块的实现——它以字符串形式嵌在模板里，
+    由 CloudFormation 直接建成 Lambda。抽出来 exec 是唯一能给它加测试的办法。
+    """
+    import yaml
+
+    class _Loader(yaml.SafeLoader):
+        pass
+
+    # !Sub / !GetAtt 这些内建函数标签对本测试无意义，一律忽略。
+    _Loader.add_multi_constructor('!', lambda loader, suffix, node: None)
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, 'template.yaml'), encoding='utf-8') as f:
+        doc = yaml.load(f, Loader=_Loader)
+    src = doc['Resources']['CodeFetcherFunction']['Properties']['Code']['ZipFile']
+    ns = {}
+    exec(compile(src, 'code_fetcher_inline.py', 'exec'), ns)  # noqa: S102
+    return ns
+
+
+class TestCodeFetcherResolve:
+    """_resolve 决定页面上显示的版本名，也是唯一把外部字符串写进
+    build_info.py 源码的地方，因此字符集校验是安全边界而不是洁癖。"""
+
+    COMMIT = 'a' * 40
+
+    def _ns(self, latest_tag='v2026.08.03.1'):
+        ns = _load_code_fetcher()
+        calls = []
+
+        def fake_api(url, sha=False):
+            calls.append(url)
+            if url.endswith('/releases/latest'):
+                return json.dumps({'tag_name': latest_tag})
+            return self.COMMIT + '\n'
+
+        ns['_api'] = fake_api
+        ns['calls'] = calls
+        return ns
+
+    def test_safe_tag_accepts_calver(self):
+        ns = self._ns()
+        assert ns['_safe_tag']('v2026.08.03.1') == 'v2026.08.03.1'
+        assert ns['_safe_tag']('  v2026.08.03.1  ') == 'v2026.08.03.1'
+
+    @pytest.mark.parametrize('bad', [
+        '',
+        'v1"; import os; os.system("rm -rf /")  #',   # 注入 build_info.py
+        'v1\nRELEASE_TAG = "x"',                      # 换行同样能注入
+        'v 1',
+        '../../etc/passwd',
+        'v' * 65,
+    ])
+    def test_safe_tag_rejects_dangerous(self, bad):
+        ns = self._ns()
+        assert ns['_safe_tag'](bad) == ''
+
+    def test_pinned_sha_takes_tag_from_hint(self):
+        """自动升级把栈参数钉成裸 SHA，版本名只能由 ReleaseTag 带进来。"""
+        ns = self._ns()
+        sha, tag = ns['_resolve']('o', 'r', 'b' * 40, 'v2026.08.03.1')
+        assert sha == self.COMMIT
+        assert tag == 'v2026.08.03.1'
+
+    def test_pinned_sha_drops_malformed_hint(self):
+        ns = self._ns()
+        _, tag = ns['_resolve']('o', 'r', 'b' * 40, 'v1"; boom')
+        assert tag == ''
+
+    def test_named_revision_used_as_tag(self):
+        ns = self._ns()
+        _, tag = ns['_resolve']('o', 'r', 'v2026.08.03.1', '')
+        assert tag == 'v2026.08.03.1'
+
+    def test_empty_revision_follows_latest_release(self):
+        ns = self._ns(latest_tag='v2026.08.03.1')
+        sha, tag = ns['_resolve']('o', 'r', '')
+        assert (sha, tag) == (self.COMMIT, 'v2026.08.03.1')
+
+    def test_malformed_release_tag_never_reaches_a_url(self):
+        """tag_name 是外部输入，先过白名单再拼 URL。"""
+        ns = self._ns(latest_tag='v1 ../../../etc/passwd')
+        with pytest.raises(Exception, match='no usable tag_name'):
+            ns['_resolve']('o', 'r', '')
+        assert not any('passwd' in u for u in ns['calls'])

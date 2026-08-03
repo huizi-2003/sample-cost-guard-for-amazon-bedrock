@@ -213,7 +213,7 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
   - **自动更新**（默认开启）：每周自动检查 GitHub Release 并整栈升级，用户无需操作
   - 更新记录时间线：每次检查/更新的时间、结果、更新内容（来自 Release notes），可展开查看
   - 页面开关可随时关闭自动更新，也可点「立即更新」手动触发
-  - 版本号显示 Release tag（如 `v20260802`），构建时由 CodeFetcher 固化进 `common/build_info.py`，无需手动维护
+  - 版本号显示 Release tag（如 `v2026.08.03.1`），构建时由 CodeFetcher 固化进 `common/build_info.py`，无需手动维护
   - 堆栈名称、最后更新时间、IP 白名单（读取 CloudFormation 栈参数）
   - 检查结果缓存 1 小时（DynamoDB），GitHub 不可达时回退过期缓存
   - 详见 [自动更新](#自动更新)
@@ -374,6 +374,7 @@ CLI / CloudShell 部署的分步指引（含从旧版本升级）见 [DEPLOY-GUI
 |------|------|--------|
 | `AllowedCidrs` | 允许访问 Web Console 的 CIDR 列表（逗号分隔）<br/>**变更时自动重新部署 API，Resource Policy 即时生效** | `127.0.0.1/32`（全部关闭） |
 | `SourceRevision` | 要部署的 commit SHA 或 tag。**留空 = 自动解析最新 Release**（推荐） | `''`（空） |
+| `ReleaseTag` | `SourceRevision` 对应的 Release tag，**仅用于界面展示**。自动升级会自己填，因为它钉的是裸 commit SHA，而 SHA 本身不带版本名 | `''`（空） |
 | `GitHubOwner` | GitHub 仓库所有者（fork 时改为你的用户名） | `huizi-2003` |
 | `GitHubRepo` | GitHub 仓库名 | `sample-cost-guard-for-amazon-bedrock` |
 | `Version` | 不改 `SourceRevision` 的情况下强制重新拉取代码。启用自动更新后基本不需要动它 | `1` |
@@ -466,7 +467,7 @@ aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cos
 ### 发版流程
 
 ```
-git tag v20260802 && git push origin v20260802
+git tag v2026.08.03.1 && git push origin v2026.08.03.1
       ↓
 GitHub Actions（.github/workflows/release.yml）自动跑 cfn-lint + pytest
       ↓  失败 → 不创建 Release，什么都不会发出去
@@ -483,7 +484,9 @@ GitHub Actions（.github/workflows/release.yml）自动跑 cfn-lint + pytest
 - **CI 是门禁。** 一个坏 Release 会自动进入所有用户的账号，所以创建 Release 前必须先通过测试和模板校验。
 - **draft 是暂存区。** `/releases/latest` 端点会跳过 draft 和 prerelease，因此 draft 状态下代码已打 tag、已验证，但一个用户都收不到。点 Publish 那一刻才算真正发布。
 
-版本号建议用日期格式 `vYYYYMMDD`（一天内发多次可加后缀，如 `v20260802.1`）。Release notes 会**直接显示给非技术用户**，所以请写面向用户的说明，而不是 `fix: ...` 这类 commit 前缀。
+版本号用 `vYYYY.MM.DD.N` 格式，`N` 是当天第几次发版、**从 1 开始且首版也要带**（例如 `v2026.08.03.1`）。三条理由：日期让用户一眼看出自己的部署有多旧，这是这个项目最有用的信息，semver 那套兼容性契约在这儿没有下游消费者；序号永远带，规则就没有例外，不会有人以为 `.1` 另有含义；`v` 前缀是承重的，CodeFetcher 用 `^[0-9a-f]{7,40}$` 区分"这是 SHA 还是 tag"，去掉 `v` 之后 `20260803` 八位全是 hex 字符，会被当成 commit SHA，版本名就丢了。
+
+Release notes 会**直接显示给非技术用户**，所以请写面向用户的说明，而不是 `fix: ...` 这类 commit 前缀。
 
 想先在自己的栈上验证再放给用户：把 Release 勾选为 **prerelease**。`/releases/latest` 会跳过它，普通用户看不见；你自己的测试栈用 `SourceRevision=<该 tag>` 显式部署即可。
 

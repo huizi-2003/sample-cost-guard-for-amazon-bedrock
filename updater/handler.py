@@ -264,12 +264,17 @@ def _template_url(bucket, key, region):
     return f'https://{bucket}.s3.{region}.amazonaws.com/{key}'
 
 
-def _build_parameters(cfn, stack, template_url, source_revision):
+def _build_parameters(cfn, stack, template_url, source_revision, release_tag=''):
     """构造 change set 参数列表。
 
     用 validate_template 拿到目标模板真正声明的参数名，再和当前栈的参数取
     交集。这样目标模板新增参数时走它自己的默认值，删除参数时也不会因为
     传了不存在的参数而失败——`Branch` 这种被移除的参数正是这么处理的。
+
+    SourceRevision 和 ReleaseTag 都必须显式覆盖、不能 UsePreviousValue：
+    前者是本次要部署的版本，后者是它对应的版本名。ReleaseTag 尤其不能沿用
+    旧值——回退时目标 SHA 没有对应的 tag，传空才能让页面老实显示 SHA，沿用
+    旧值会把界面上的"当前版本"钉在一个已经不在运行的版本号上。
     """
     valid = set()
     try:
@@ -278,13 +283,17 @@ def _build_parameters(cfn, stack, template_url, source_revision):
     except ClientError as e:
         logger.warning(f'validate_template 失败，回退为沿用全部现有参数: {e}')
 
+    overrides = {'SourceRevision': source_revision, 'ReleaseTag': release_tag}
     params = []
-    if not valid or 'SourceRevision' in valid:
-        params.append({'ParameterKey': 'SourceRevision', 'ParameterValue': source_revision})
+    for key, value in overrides.items():
+        # valid 为空表示 validate_template 失败，此时只能按当前模板的认知来传。
+        # ReleaseTag 是新增参数，旧模板没有，传了会直接报错，所以必须判存在。
+        if (not valid and key == 'SourceRevision') or key in valid:
+            params.append({'ParameterKey': key, 'ParameterValue': value})
 
     for p in stack.get('Parameters') or []:
         key = p['ParameterKey']
-        if key == 'SourceRevision':
+        if key in overrides:
             continue
         if valid and key not in valid:
             logger.info(f'目标模板已移除参数 {key}，跳过')
@@ -458,8 +467,11 @@ def health_check(lambda_client, function_name, context=None, retries=3, delay=10
 # ===== 升级执行 =====
 
 def _apply_revision(cfn, s3, stack_name, owner, repo, bucket, region,
-                    target_sha, role_arn, reason):
+                    target_sha, role_arn, reason, target_tag=''):
     """把栈更新到指定 commit SHA。
+
+    target_tag 只用于展示：栈参数里钉的是不可变的 SHA，页面上要显示的版本名
+    只能由这里一起带过去。回退时没有对应的 tag，传空即可。
 
     返回 (ok, info)。info 含 changeset_name / blocked_reasons / error。
     """
@@ -478,7 +490,7 @@ def _apply_revision(cfn, s3, stack_name, owner, repo, bucket, region,
 
     template_url = _template_url(bucket, key, region)
     _, stack = _stack_status(cfn, stack_name)
-    params = _build_parameters(cfn, stack, template_url, target_sha)
+    params = _build_parameters(cfn, stack, template_url, target_sha, target_tag)
 
     cs_name = f'auto-upgrade-{target_sha[:12]}-{int(time.time())}'
     create_kwargs = {
@@ -777,7 +789,8 @@ def check_and_upgrade(event, context):
 
     ok, info = _apply_revision(cfn, s3, stack_name, owner, repo, bucket, region,
                                target_sha, role_arn,
-                               f'auto upgrade {current_sha[:12]} -> {target_tag}')
+                               f'auto upgrade {current_sha[:12]} -> {target_tag}',
+                               target_tag=target_tag)
     if not ok:
         if info.get('no_changes'):
             save_config(last_status=STATUS_NO_UPDATE, last_error='', current_upgrade_id='')
@@ -885,7 +898,10 @@ def rollback(event, context):
     ok, info = _apply_revision(cfn, _s3_client(), stack_name, ctx_info['owner'],
                                ctx_info['repo'], ctx_info['bucket'], ctx_info['region'],
                                good_sha, ctx_info['role_arn'],
-                               f'auto rollback to {good_sha[:12]}')
+                               f'auto rollback to {good_sha[:12]}',
+                               # 回退目标是 last_known_good_sha，没有对应的 tag。
+                               # 传空让页面老实显示 SHA，而不是沿用失败版本的版本号。
+                               target_tag='')
     if not ok:
         if info.get('no_changes'):
             return _fail('回退变更集为空：栈已经是该版本，但健康检查仍失败，'

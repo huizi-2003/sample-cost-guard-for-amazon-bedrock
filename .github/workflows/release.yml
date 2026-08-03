@@ -1,7 +1,7 @@
 name: Release
 
 # 发版流程：
-#   git tag v20260802 && git push origin v20260802
+#   git tag v2026.08.03.1 && git push origin v2026.08.03.1
 #         ↓
 #   本工作流：cfn-lint + pytest
 #         ↓ 失败 → 不创建 Release，任何用户都收不到东西
