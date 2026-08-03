@@ -314,7 +314,6 @@ tr:hover { background: #faf7f4; }
       <div class="summary-card"><div class="value" id="ver-current">-</div><div class="label">当前版本</div></div>
       <div class="summary-card"><div class="value" id="ver-latest">-</div><div class="label">最新版本</div></div>
       <div class="summary-card"><div class="value" id="ver-last-updated">-</div><div class="label">最后更新时间</div></div>
-      <div class="summary-card"><div class="value" id="ver-stack-name">-</div><div class="label">堆栈名称</div></div>
     </div>
 
     <!-- 更新状态 -->
@@ -1284,7 +1283,6 @@ async function loadVersionInfo() {
     loadingEl.style.display = 'none';
     contentEl.style.display = '';
 
-    document.getElementById('ver-stack-name').textContent = data.stack_name || '-';
     document.getElementById('ver-current').textContent = verLabel(data.release_tag, data.commit_sha);
     document.getElementById('ver-latest').textContent =
       verLabel(data.latest_tag, data.latest_sha) + (data.latest_stale ? ' (缓存)' : '');
