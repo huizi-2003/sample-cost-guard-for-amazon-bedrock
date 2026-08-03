@@ -234,7 +234,14 @@ def save_ai_summary_config(enabled: bool, model_id: str):
 
 AUTO_UPGRADE_SK = 'auto_upgrade'
 UPGRADE_HISTORY_PK = 'UPGRADE'
-UPGRADE_HISTORY_TTL_DAYS = 365
+
+# 升级记录保留 90 天（与 RECONCILE#* 一致），由 DDB TTL 自动清理。
+#
+# 周检即使"无更新"也会记一条（见 updater.check_and_upgrade），所以这个 TTL
+# 同时决定了记录条数的稳态上限：90 天 ≈ 13 条周检记录，页面固定只取最近
+# 20 条，剩下的余量才够放真正的升级 / 失败记录。TTL 放到年级别时，周检记录
+# 会把那 20 条窗口占满，真实记录虽然还在表里却翻不到了。
+UPGRADE_HISTORY_TTL_DAYS = 90
 
 # current_upgrade_id 这把"升级进行中"的锁多久后视为失效。
 #
