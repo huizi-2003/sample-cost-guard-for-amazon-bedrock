@@ -452,89 +452,217 @@ def reconcile_one(start_date, end_date, now):
     if not shown:
         msg += "  未发现 Bedrock 用量\n"
 
-    return {'msg': msg, 'total_actual': total_actual, 'reconcile_diff_pct': reconcile_diff_pct}
+    return {
+        'msg': msg,
+        'total_actual': total_actual,
+        'reconcile_diff_pct': reconcile_diff_pct,
+        # 供本轮月汇总直接覆盖刚写入日期，避免 DDB 最终一致读取短暂漏计。
+        'model_costs': {
+            model: detail['actual_cost']
+            for model, detail in model_details.items()
+            if detail['actual_cost'] >= 0.01
+        },
+    }
 
 
-def _build_month_context(now):
-    """聚合本月已落库的对账数据，生成 AI 总结使用的月度上下文。
-
-    读取失败或本月无数据时返回 None，不阻塞日报推送。
-    """
+def _get_month_summary(reference_date, overrides=None):
+    """读取报告日期所在月的数据，并用本轮结果覆盖刚写入日期。"""
     try:
-        month_start = now.strftime('%Y-%m-01')
+        if isinstance(reference_date, str):
+            month_prefix = reference_date[:7]
+        else:
+            month_prefix = reference_date.strftime('%Y-%m')
+        # RECONCILE 记录 90 天 TTL，取满整个保留窗口再按月份筛选，
+        # 避免默认小 limit 把目标月较早日期截断，导致月累计偏低。
         dates = sorted(
-            date for date in get_reconcile_dates(limit=62)
-            if date >= month_start
+            date for date in get_reconcile_dates(limit=400)
+            if date.startswith(month_prefix + '-')
         )
+
+        daily_costs = {}
+        daily_model_costs = {}
+        for date in dates:
+            records = get_reconcile_by_date(date)
+            models = {
+                model: float(record.get('actual_cost', 0))
+                for model, record in records.items()
+                if not model.startswith('_')
+            }
+            model_total = sum(models.values())
+            summary_total = records.get('_summary', {}).get('total_actual')
+            daily_costs[date] = float(summary_total) if summary_total is not None else model_total
+            daily_model_costs[date] = models
+
+        # Query/Scan 默认最终一致；当前 T-2/T-1 刚写完时可能暂不可见。
+        # 本轮结果来自同一次 CE 计算，直接覆盖这些日期才能保证手机金额一致。
+        for date, result in (overrides or {}).items():
+            if not date.startswith(month_prefix + '-') or result.get('ce_error'):
+                continue
+            if date not in dates:
+                dates.append(date)
+            daily_costs[date] = float(result.get('total_actual') or 0)
+            daily_model_costs[date] = {
+                model: float(cost)
+                for model, cost in result.get('model_costs', {}).items()
+            }
+
+        dates.sort()
         if not dates:
             return None
 
-        daily_costs = {}
         model_costs = {}
-        for date in dates:
-            records = get_reconcile_by_date(date)
-            day_total = 0.0
-            for model, record in records.items():
-                if model.startswith('_'):
-                    continue
-                cost = float(record.get('actual_cost', 0))
-                day_total += cost
+        for models in daily_model_costs.values():
+            for model, cost in models.items():
                 model_costs[model] = model_costs.get(model, 0.0) + cost
-            daily_costs[date] = day_total
-
-        if not model_costs:
-            return None
 
         total_cost = sum(daily_costs.values())
-        average_cost = total_cost / len(daily_costs)
-        top_models = sorted(model_costs.items(), key=lambda item: item[1], reverse=True)[:5]
-
-        lines = [
-            f"--- 本月累计数据（{dates[0]} 至 {dates[-1]}）---",
-            f"累计费用: ${total_cost:.2f}",
-            f"日均费用: ${average_cost:.2f}（{len(daily_costs)} 天）",
-            "Top 5 模型:",
-        ]
-        lines.extend(f"  {model}: ${cost:.2f}" for model, cost in top_models)
-        lines.append("每日费用列表:")
-        lines.extend(f"  {date}: ${cost:.2f}" for date, cost in daily_costs.items())
-        return '\n'.join(lines)
+        top_model = max(model_costs.items(), key=lambda item: item[1]) if model_costs else None
+        return {
+            'dates': dates,
+            'daily_costs': daily_costs,
+            'model_costs': model_costs,
+            'total_cost': total_cost,
+            'top_model': top_model,
+        }
     except Exception as e:
-        logger.warning(f"Failed to build monthly AI context: {e}")
+        logger.warning(f"Failed to build monthly summary: {e}")
         return None
 
 
-def _get_ai_summary(report_text, date_str, ai_config):
-    """调用 AgentCore endpoint 生成 AI 账单总结。
+def _build_month_context(now, month_summary=None):
+    """把本月确定性汇总转换成 AgentCore 使用的上下文。"""
+    summary = month_summary or _get_month_summary(now)
+    if not summary or not summary['dates']:
+        return None
 
-    失败时返回 None（不阻塞日报推送）。
-    """
+    dates = summary['dates']
+    daily_costs = summary['daily_costs']
+    model_costs = summary['model_costs']
+    average_cost = summary['total_cost'] / len(dates)
+    top_models = sorted(model_costs.items(), key=lambda item: item[1], reverse=True)[:5]
+
+    lines = [
+        f"--- 本月累计数据（{dates[0]} 至 {dates[-1]}）---",
+        f"累计费用: ${summary['total_cost']:.2f}",
+        f"日均费用: ${average_cost:.2f}（{len(dates)} 天）",
+        "Top 5 模型:",
+    ]
+    lines.extend(f"  {model}: ${cost:.2f}" for model, cost in top_models)
+    lines.append("每日费用列表:")
+    lines.extend(f"  {date}: ${cost:.2f}" for date, cost in daily_costs.items())
+    return '\n'.join(lines)
+
+
+def _format_model_name(model):
+    """把账单内部模型 ID 压缩成适合手机阅读的名称。"""
+    value = model.lower()
+    families = (('opus', 'Opus'), ('sonnet', 'Sonnet'), ('haiku', 'Haiku'))
+    for family, title in families:
+        match = re.search(rf'claude[-_.]?{family}[-_.]?(\d+)(?:[-_.](\d+))?', value)
+        if match:
+            version = match.group(1)
+            if match.group(2):
+                version += f".{match.group(2)}"
+            return f"Claude {title} {version}"
+        match = re.search(rf'claude(\d+)[.-](\d+){family}', value)
+        if match:
+            return f"Claude {title} {match.group(1)}.{match.group(2)}"
+
+    value = re.sub(r'^(?:global\.|us\.|eu\.)?(?:anthropic\.)?', '', value)
+    value = re.sub(r'-(?:cross-region-global|mantle-global|global-standard|global)$', '', value)
+    return value[:40]
+
+
+def _format_change(current, previous):
+    if previous is None or previous.get('ce_error'):
+        return "（前日数据不可用）"
+    previous_cost = float(previous.get('total_actual') or 0)
+    current_cost = float(current.get('total_actual') or 0)
+    if previous_cost <= 0:
+        return "（前日无用量）" if current_cost > 0 else "（与前日持平）"
+    change_pct = (current_cost - previous_cost) / previous_cost * 100
+    if abs(change_pct) < 0.05:
+        return "（与前日持平）"
+    arrow = '↑' if change_pct > 0 else '↓'
+    return f"（较前日 {arrow}{abs(change_pct):.1f}%）"
+
+
+def _format_reconcile_status(result):
+    if result.get('ce_error'):
+        return "不可用（账单查询失败）"
+    diff = result.get('reconcile_diff_pct')
+    if diff is None:
+        return "无用量" if float(result.get('total_actual') or 0) == 0 else "待核对"
+    diff = float(diff)
+    state = "正常" if abs(diff) <= 5 else "⚠ 异常"
+    return f"{state}（差异 {diff:+.2f}%）"
+
+
+def _build_mobile_summary(report_date, current, previous=None, month_summary=None):
+    """构造固定五行手机摘要；完整技术明细只保留在日志和 Web 控制台。"""
+    parsed = datetime.strptime(report_date, '%Y-%m-%d')
+    date_label = f"{parsed.month} 月 {parsed.day} 日"
+    if current.get('ce_error'):
+        cost_line = "当日费用：获取失败" if previous is None else "昨日暂估：获取失败"
+    else:
+        cost = float(current.get('total_actual') or 0)
+        if previous is None:
+            cost_line = f"当日费用：${cost:,.2f}"
+        else:
+            cost_line = f"昨日暂估：${cost:,.2f}{_format_change(current, previous)}"
+
+    if month_summary:
+        month_total = float(month_summary['total_cost'])
+        top_model = month_summary.get('top_model')
+        month_line = f"本月累计：${month_total:,.2f}"
+    else:
+        month_total = None
+        top_model = None
+        month_line = "本月累计：暂不可用"
+
+    if top_model and month_total and month_total > 0:
+        model, model_cost = top_model
+        share = model_cost / month_total * 100
+        model_line = (
+            f"费用最高：{_format_model_name(model)}"
+            f"（${model_cost:,.2f}，占 {share:.1f}%）"
+        )
+    else:
+        model_line = "费用最高：暂无数据"
+
+    return '\n'.join([
+        f"📊 Bedrock 日报｜{date_label}",
+        cost_line,
+        month_line,
+        model_line,
+        f"对账状态：{_format_reconcile_status(current)}",
+    ])
+
+
+def _get_ai_summary(report_text, date_str, ai_config, month_summary=None):
+    """调用 AgentCore endpoint 生成一行补充结论；失败不阻塞日报。"""
     endpoint_arn = os.environ.get('AGENTCORE_ENDPOINT_ARN', '')
     if not endpoint_arn:
         logger.warning("AGENTCORE_ENDPOINT_ARN not set, skipping AI summary")
         return None
 
     try:
-        # AgentCore Runtime 与本栈同区域部署；从 endpoint ARN 第 4 段解析 region，
-        # 避免非 us-east-1 部署时固定 us-east-1 导致调用失败。解析失败回退到 Lambda 运行区域。
         arn_parts = endpoint_arn.split(':')
         region = arn_parts[3] if len(arn_parts) > 3 and arn_parts[3] else (os.environ.get('AWS_REGION') or 'us-east-1')
         client = boto3.client('bedrock-agentcore', region_name=region)
-        prompt = f"以下是 {date_str} 的 Bedrock 对账数据，请生成中文摘要：\n\n{report_text}"
-        month_context = _build_month_context(datetime.now(timezone.utc))
+        prompt = (
+            f"以下是 {date_str} 的 Bedrock 对账数据。请只返回一句中文补充结论，"
+            f"不分点、不换行：\n\n{report_text}"
+        )
+        month_context = _build_month_context(datetime.now(timezone.utc), month_summary)
         if month_context:
             prompt += f"\n\n{month_context}"
         payload = json.dumps({
             'model_id': ai_config['model_id'],
             'prompt': prompt,
         })
-        # AGENTCORE_ENDPOINT_ARN 接受两种形式：
-        #   runtime ARN            .../runtime/{id}                        → qualifier=DEFAULT
-        #   endpoint ARN           .../runtime/{id}/runtime-endpoint/{name} → qualifier={name}
-        # 模板传的是前者：DEFAULT 端点始终指向最新 runtime 版本，无需栈更新同步。
-        # 后者保留兼容，便于手工指定具名端点做灰度。
         parts = endpoint_arn.split('/runtime-endpoint/')
-        runtime_arn = parts[0]  # .../runtime/{id}
+        runtime_arn = parts[0]
         qualifier = parts[1] if len(parts) > 1 else 'DEFAULT'
         resp = client.invoke_agent_runtime(
             agentRuntimeArn=runtime_arn,
@@ -542,18 +670,17 @@ def _get_ai_summary(report_text, date_str, ai_config):
             payload=payload.encode('utf-8'),
         )
         raw = resp['response'].read().decode('utf-8')
-        # Agent 可能返回 JSON（含 result/text 字段）或纯文本
         try:
             body = json.loads(raw)
             if isinstance(body, str):
-                return body
+                return ' '.join(body.split())
             text = body.get('result') or body.get('text')
             if isinstance(text, str) and text.strip():
-                return text
+                return ' '.join(text.split())
             logger.warning(f"Unexpected agent response shape: {raw[:200]}")
             return None
         except (json.JSONDecodeError, TypeError, AttributeError):
-            return raw
+            return ' '.join(raw.split())
     except Exception as e:
         logger.error(f"AI summary failed: {e}")
         return None
@@ -575,34 +702,49 @@ def handler(event, context):
             return {'statusCode': 400, 'error': f'Date must be before today: {override_date}'}
         start_date = override_date
         end_date = (parsed + timedelta(days=1)).strftime('%Y-%m-%d')
-        r = reconcile_one(start_date, end_date, now)
-        if r.get('ce_error'):
+        result = reconcile_one(start_date, end_date, now)
+        if result.get('ce_error'):
             if not silent:
-                send_webhook_all(f"[Bedrock 对账] 账号 {get_account_id()} | Cost Explorer 查询失败: {r['ce_error']}", webhooks)
+                send_webhook_all(f"[Bedrock 对账] 账号 {get_account_id()} | Cost Explorer 查询失败: {result['ce_error']}", webhooks)
             return {'statusCode': 500, 'error': 'ce_failed'}
         if not silent:
-            send_webhook_all(f"[Bedrock 日报] 账号 {get_account_id()} | {start_date}\n\n{r['msg']}", webhooks)
-        logger.info(r['msg'])
-        return {'statusCode': 200, 'date': start_date, 'total_actual': r['total_actual'], 'reconcile_diff_pct': r['reconcile_diff_pct']}
+            send_webhook_all(
+                _build_mobile_summary(
+                    start_date,
+                    result,
+                    month_summary=_get_month_summary(start_date, {start_date: result}),
+                ),
+                webhooks,
+            )
+        logger.info(result['msg'])
+        return {'statusCode': 200, 'date': start_date, 'total_actual': result['total_actual'], 'reconcile_diff_pct': result['reconcile_diff_pct']}
 
-    # 默认每日运行：同时对账 T-2（已结算）和 T-1（临时，账单可能未结算完）。
-    # 每个日期会被跑两次：次日先以 T-1 跑出临时值，后天再以 T-2 跑出最终值覆盖，
-    # 既保证第二天就有数据可看，又保证最终被修正为准确值。一条合并报告推送。
+    # 默认每日运行：T-2 最终值 + T-1 暂估值仍完整写库，但手机只收到五行摘要。
     jobs = [
         ('T-2 (已结算)', (now - timedelta(days=2)).strftime('%Y-%m-%d'), (now - timedelta(days=1)).strftime('%Y-%m-%d')),
         ('T-1 (临时·账单可能未结算完)', (now - timedelta(days=1)).strftime('%Y-%m-%d'), now.strftime('%Y-%m-%d')),
     ]
 
-    combined = f"[Bedrock 日报] 账号 {get_account_id()}\n"
+    detail_report = f"[Bedrock 日报] 账号 {get_account_id()}\n"
     dates = []
-    for label, s, e in jobs:
-        dates.append(s)
-        combined += f"\n========== {label}  {s} ==========\n"
-        r = reconcile_one(s, e, now)
-        if r.get('ce_error'):
-            combined += f"  ⚠ Cost Explorer 查询失败: {r['ce_error']}\n"
+    results = []
+    for label, start_date, end_date in jobs:
+        dates.append(start_date)
+        detail_report += f"\n========== {label}  {start_date} ==========\n"
+        result = reconcile_one(start_date, end_date, now)
+        results.append(result)
+        if result.get('ce_error'):
+            detail_report += f"  ⚠ Cost Explorer 查询失败: {result['ce_error']}\n"
         else:
-            combined += r['msg']
+            detail_report += result['msg']
+
+    month_summary = _get_month_summary(
+        dates[-1],
+        {date: result for date, result in zip(dates, results)},
+    )
+    mobile_summary = _build_mobile_summary(
+        dates[-1], results[-1], previous=results[0], month_summary=month_summary,
+    )
 
     # 推送策略判断（先判断是否推送，避免不推送时仍调用 AI 产生模型费用）
     notify_policy = get_notify_policy()
@@ -617,19 +759,19 @@ def handler(event, context):
         if not should_notify:
             logger.info(f"Notify policy is 'workday' and today ({beijing_now.strftime('%Y-%m-%d')}) is not a workday, skipping notification")
 
-    # AI 账单总结（可选功能，默认关闭）。仅在确定会推送且有 webhook 配置时才调用——
-    # 不推送日报时若仍调用 AI，只会白白产生模型费用而结果无人看到。
+    # AI 只追加一句可选结论；失败只记日志，不再把技术警告发到手机。
     if should_notify and webhooks:
         ai_config = get_ai_summary_config()
         if ai_config['enabled']:
-            ai_summary = _get_ai_summary(combined, ', '.join(dates), ai_config)
+            ai_summary = _get_ai_summary(detail_report, ', '.join(dates), ai_config, month_summary)
             if ai_summary:
-                combined += f"\n\n📊 AI 总结：\n{ai_summary}"
+                mobile_summary += f"\n💡 {ai_summary}"
             else:
-                combined += "\n\n⚠ AI 总结生成失败（详见 reconciler / AgentCore 日志）"
+                logger.warning("AI summary unavailable; sending deterministic mobile summary only")
 
     if should_notify:
-        send_webhook_all(combined, webhooks)
+        send_webhook_all(mobile_summary, webhooks)
 
-    logger.info(combined)
+    logger.info(detail_report)
+    logger.info(f"Mobile summary:\n{mobile_summary}")
     return {'statusCode': 200, 'dates': dates}

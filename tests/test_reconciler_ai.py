@@ -258,8 +258,8 @@ class TestHandlerAiGating:
         mock_get_ai.assert_called_once()
         mock_send.assert_called_once()
         pushed_text = mock_send.call_args[0][0]
-        assert '📊 AI 总结' in pushed_text
-        assert 'AI摘要内容' in pushed_text
+        assert '💡 AI摘要内容' in pushed_text
+        assert len(pushed_text.splitlines()) == 6
 
     @patch('reconciler.handler._get_ai_summary')
     @patch('reconciler.handler.get_ai_summary_config')
@@ -268,7 +268,7 @@ class TestHandlerAiGating:
     @patch('reconciler.handler.get_webhook_config')
     @patch('reconciler.handler.get_account_id')
     @patch('reconciler.handler.get_notify_policy')
-    def test_always_enabled_ai_failure_appends_warning(
+    def test_always_enabled_ai_failure_keeps_short_summary(
         self, mock_policy, mock_acct, mock_webhooks, mock_reconcile, mock_send,
         mock_ai_cfg, mock_get_ai,
     ):
@@ -286,7 +286,8 @@ class TestHandlerAiGating:
         mock_get_ai.assert_called_once()
         mock_send.assert_called_once()
         pushed_text = mock_send.call_args[0][0]
-        assert '⚠ AI 总结生成失败' in pushed_text
+        assert '⚠ AI 总结生成失败' not in pushed_text
+        assert len(pushed_text.splitlines()) == 5
 
     @patch('reconciler.handler._get_ai_summary')
     @patch('reconciler.handler.get_ai_summary_config')

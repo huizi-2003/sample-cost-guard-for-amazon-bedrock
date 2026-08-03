@@ -395,7 +395,7 @@ def test_valid_historical_date_sets_correct_dates(
     result = handler({'date': '2024-06-15'}, None)
     assert result['statusCode'] == 200
     assert result['date'] == '2024-06-15'
-    mock_account_id.assert_called_once_with()
+    # 手机摘要不再展示完整账号 ID；详细账号信息仍保留在日志和 Web 控制台。
 
 
 @patch('reconciler.handler._get_table', new=MagicMock())

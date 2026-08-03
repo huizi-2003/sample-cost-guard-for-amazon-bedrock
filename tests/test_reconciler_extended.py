@@ -351,3 +351,105 @@ class TestReconcileOneIntegration:
         # 第二次调用带上了 NextPageToken
         second_call_kwargs = ce.get_cost_and_usage.call_args_list[1][1]
         assert second_call_kwargs.get('NextPageToken') == 'PAGE2'
+
+
+
+# === _get_month_summary / mobile summary tests ===
+
+
+class TestMonthSummary:
+    """_get_month_summary: 按报告日期所在月汇总，且不被日期检索窗口截断。"""
+
+    @patch('reconciler.handler.get_reconcile_by_date')
+    @patch('reconciler.handler.get_reconcile_dates')
+    def test_full_month_not_truncated_by_date_window(self, mock_dates, mock_by_date):
+        """历史重跑较早月份时，必须汇总目标月全部日期，而非最近窗口的少数几天。"""
+        from reconciler.handler import _get_month_summary
+        # 保留窗口内既有目标月（1月）全月，也有更晚月份
+        all_dates = ['2026-03-31', '2026-03-30'] + [f'2026-01-{d:02d}' for d in range(1, 32)]
+        mock_dates.return_value = sorted(all_dates, reverse=True)
+        mock_by_date.side_effect = lambda d: {'_summary': {'total_actual': '1'}}
+
+        # 重跑 1-20，本轮以确定性结果覆盖当天为 $9
+        summary = _get_month_summary(
+            '2026-01-20',
+            {'2026-01-20': {'total_actual': 9.0, 'reconcile_diff_pct': 0.0, 'model_costs': {'m': 9.0}}},
+        )
+
+        # 1 月 31 天全部计入；30 天 * $1 + 覆盖日 $9 = $39
+        assert len(summary['dates']) == 31
+        assert summary['total_cost'] == pytest.approx(39.0)
+        # 检索窗口必须足够大以覆盖 90 天 TTL
+        assert mock_dates.call_args.kwargs.get('limit', 0) >= 90
+
+    @patch('reconciler.handler.get_reconcile_by_date')
+    @patch('reconciler.handler.get_reconcile_dates')
+    def test_cross_month_dates_excluded(self, mock_dates, mock_by_date):
+        """T-2/T-1 跨月时，只统计报告日期所在月。"""
+        from reconciler.handler import _get_month_summary
+        mock_dates.return_value = ['2026-08-01', '2026-07-31']
+        mock_by_date.side_effect = lambda d: {'_summary': {'total_actual': '5'}}
+
+        summary = _get_month_summary(
+            '2026-08-01',
+            {
+                '2026-07-31': {'total_actual': 5.0, 'reconcile_diff_pct': 0.0, 'model_costs': {}},
+                '2026-08-01': {'total_actual': 5.0, 'reconcile_diff_pct': 0.0, 'model_costs': {}},
+            },
+        )
+
+        assert summary['dates'] == ['2026-08-01']
+        assert summary['total_cost'] == pytest.approx(5.0)
+
+    @patch('reconciler.handler.get_reconcile_by_date')
+    @patch('reconciler.handler.get_reconcile_dates')
+    def test_current_round_overrides_stale_ddb_read(self, mock_dates, mock_by_date):
+        """DDB 最终一致可能返回旧值；本轮确定性结果必须覆盖同日金额。"""
+        from reconciler.handler import _get_month_summary
+        mock_dates.return_value = ['2026-08-02']
+        # DDB 仍是旧的 $99
+        mock_by_date.side_effect = lambda d: {'_summary': {'total_actual': '99'}}
+
+        summary = _get_month_summary(
+            '2026-08-02',
+            {'2026-08-02': {'total_actual': 15.87, 'reconcile_diff_pct': 0.0, 'model_costs': {'opus': 15.87}}},
+        )
+
+        assert summary['total_cost'] == pytest.approx(15.87)
+
+
+class TestMobileSummary:
+    """_build_mobile_summary: 固定行数，月汇总缺失时不冒充金额。"""
+
+    def test_five_lines_with_month_summary(self):
+        from reconciler.handler import _build_mobile_summary
+        current = {'total_actual': 15.87, 'reconcile_diff_pct': -0.08}
+        previous = {'total_actual': 49.23, 'reconcile_diff_pct': 0.1}
+        month = {
+            'total_cost': 65.10,
+            'top_model': ('anthropic.claude-opus-5-mantle-global', 60.75),
+        }
+        msg = _build_mobile_summary('2026-08-02', current, previous=previous, month_summary=month)
+        lines = msg.splitlines()
+        assert len(lines) == 5
+        assert '↓67.8%' in lines[1]
+        assert '$65.10' in lines[2]
+        assert 'Opus' in lines[3] and '93.3%' in lines[3]
+
+    def test_month_unavailable_does_not_fabricate_total(self):
+        from reconciler.handler import _build_mobile_summary
+        current = {'total_actual': 15.87, 'reconcile_diff_pct': -0.08}
+        previous = {'total_actual': 49.23, 'reconcile_diff_pct': 0.1}
+        msg = _build_mobile_summary('2026-08-02', current, previous=previous, month_summary=None)
+        assert '本月累计：暂不可用' in msg
+        # 绝不能把两日相加冒充月累计
+        assert '$65.10' not in msg
+        assert '费用最高：暂无数据' in msg
+
+    def test_ce_error_shows_failure_not_normal(self):
+        from reconciler.handler import _build_mobile_summary
+        current = {'ce_error': 'AccessDenied'}
+        previous = {'total_actual': 49.23, 'reconcile_diff_pct': 0.1}
+        msg = _build_mobile_summary('2026-08-02', current, previous=previous, month_summary=None)
+        assert '获取失败' in msg
+        assert '正常' not in msg
