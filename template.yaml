@@ -69,6 +69,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
+                  - s3:GetObjectVersion
                   - s3:PutObject
                   - s3:DeleteObject
                   - s3:DeleteObjectVersion
@@ -78,6 +79,17 @@ Resources:
                   - s3:ListBucket
                   - s3:ListBucketVersions
                 Resource: !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}"
+              # 首次引入 agent 指纹时，要读出线上 AgentCoreRuntime 当前真正引用的
+              # agent.zip 版本，作为"不重建"的基准（见 CodeFetcherFunction 里的注释）。
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStackResource
+                Resource: !Ref AWS::StackId
+              # GetAgentRuntime 不支持资源级授权，只能 '*'
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:GetAgentRuntime
+                Resource: '*'
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -138,6 +150,31 @@ Resources:
               req = urllib.request.Request(event['ResponseURL'], data=body, method='PUT',
                                            headers={'content-type': '', 'content-length': str(len(body))})
               urllib.request.urlopen(req, timeout=30)
+          def _live_agent_version(stack_id):
+              # 返回线上 AgentCoreRuntime 当前真正引用的 agent.zip VersionId。
+              # 这是唯一可信的"不重建"基准。不能用"S3 里最新的 agent.zip"代替：
+              # 一次失败的栈更新会先上传新 zip、再卡死在 AgentCore 更新上，回滚后
+              # S3 里留下的是那个孤儿版本，而 AgentCore 仍停在更早的版本。
+              cfn = boto3.client('cloudformation')
+              arn = cfn.describe_stack_resource(
+                  StackName=stack_id, LogicalResourceId='AgentCoreRuntime',
+              )['StackResourceDetail']['PhysicalResourceId']
+              ac = boto3.client('bedrock-agentcore-control')
+              art = ac.get_agent_runtime(
+                  agentRuntimeId=arn.split('/')[-1])['agentRuntimeArtifact']
+              return art['codeConfiguration']['code']['s3']['versionId']
+          def _zip_has_agent_src(body, agent_src):
+              # zip 里的 agent 源文件是扁平化的（agent/main.py → main.py），逐个比对
+              # 字节，全部一致才敢认定这个 zip 就是当前源码的产物。少了这一步，认领
+              # 基准就等于凭空断言"线上代码 = 当前代码"，一旦这次发版真的改了 agent，
+              # 新代码会被永久跳过、静默停在旧版本。
+              z = zipfile.ZipFile(io.BytesIO(body))
+              names = set(z.namelist())
+              for k in agent_src:
+                  flat = k[len('agent/'):]
+                  if not flat or flat not in names or z.read(flat) != agent_src[k]:
+                      return False
+              return True
           def handler(event, context):
               try:
                   if event['RequestType'] == 'Delete':
@@ -246,14 +283,25 @@ Resources:
                       pass
 
                   if prev is None:
-                      vs = [v for v in s3.list_object_versions(
-                                Bucket=p['Bucket'], Prefix='agent.zip').get('Versions', [])
-                            if v['Key'] == 'agent.zip']
-                      if vs:
-                          prev = {'hash': agent_hash,
-                                  'version_id': min(vs, key=lambda v: v['LastModified'])['VersionId']}
-                          s3.put_object(Bucket=p['Bucket'], Key=MARKER, Body=json.dumps(prev).encode())
-                          print('adopted existing agent.zip as baseline: %s' % prev['version_id'])
+                      # 首次引入指纹机制：还没有 marker，但栈里可能已经有一个跑得
+                      # 好好的 AgentCore。此时无脑重建会换掉 VersionId，触发一次
+                      # AgentCore 更新——而那正是要绕开的 10 分钟超时。所以先认领
+                      # 线上真正引用的那个版本当基准，并验证它确实由当前源码构建。
+                      # 任何一步失败都只是退回"重建一次"，正确性不受影响：
+                      # 建栈时 AgentCoreRuntime 还不存在，走到 except 是正常的。
+                      try:
+                          vid = _live_agent_version(event['StackId'])
+                          body = s3.get_object(Bucket=p['Bucket'], Key='agent.zip',
+                                               VersionId=vid)['Body'].read()
+                          if _zip_has_agent_src(body, agent_src):
+                              prev = {'hash': agent_hash, 'version_id': vid}
+                              s3.put_object(Bucket=p['Bucket'], Key=MARKER,
+                                            Body=json.dumps(prev).encode())
+                              print('adopted live agent.zip as baseline: %s' % vid)
+                          else:
+                              print('live agent.zip %s differs from current source, rebuilding' % vid)
+                      except Exception as e:
+                          print('no baseline adopted (%s), rebuilding' % e)
 
                   if prev and prev.get('hash') == agent_hash and prev.get('version_id'):
                       agent_version_id = prev['version_id']
