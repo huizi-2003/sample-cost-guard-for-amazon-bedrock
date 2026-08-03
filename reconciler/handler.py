@@ -30,7 +30,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
-from common.config import save_reconcile_record, get_webhook_config, get_notify_policy, get_account_id, query_by_pk, _get_table, get_ai_summary_config
+from common.config import save_reconcile_record, get_webhook_config, get_notify_policy, get_account_id, query_by_pk, _get_table, get_ai_summary_config, get_reconcile_dates, get_reconcile_by_date
 from common.holiday import is_workday
 from common.webhook import send_webhook_all
 
@@ -455,6 +455,55 @@ def reconcile_one(start_date, end_date, now):
     return {'msg': msg, 'total_actual': total_actual, 'reconcile_diff_pct': reconcile_diff_pct}
 
 
+def _build_month_context(now):
+    """聚合本月已落库的对账数据，生成 AI 总结使用的月度上下文。
+
+    读取失败或本月无数据时返回 None，不阻塞日报推送。
+    """
+    try:
+        month_start = now.strftime('%Y-%m-01')
+        dates = sorted(
+            date for date in get_reconcile_dates(limit=62)
+            if date >= month_start
+        )
+        if not dates:
+            return None
+
+        daily_costs = {}
+        model_costs = {}
+        for date in dates:
+            records = get_reconcile_by_date(date)
+            day_total = 0.0
+            for model, record in records.items():
+                if model.startswith('_'):
+                    continue
+                cost = float(record.get('actual_cost', 0))
+                day_total += cost
+                model_costs[model] = model_costs.get(model, 0.0) + cost
+            daily_costs[date] = day_total
+
+        if not model_costs:
+            return None
+
+        total_cost = sum(daily_costs.values())
+        average_cost = total_cost / len(daily_costs)
+        top_models = sorted(model_costs.items(), key=lambda item: item[1], reverse=True)[:5]
+
+        lines = [
+            f"--- 本月累计数据（{dates[0]} 至 {dates[-1]}）---",
+            f"累计费用: ${total_cost:.2f}",
+            f"日均费用: ${average_cost:.2f}（{len(daily_costs)} 天）",
+            "Top 5 模型:",
+        ]
+        lines.extend(f"  {model}: ${cost:.2f}" for model, cost in top_models)
+        lines.append("每日费用列表:")
+        lines.extend(f"  {date}: ${cost:.2f}" for date, cost in daily_costs.items())
+        return '\n'.join(lines)
+    except Exception as e:
+        logger.warning(f"Failed to build monthly AI context: {e}")
+        return None
+
+
 def _get_ai_summary(report_text, date_str, ai_config):
     """调用 AgentCore endpoint 生成 AI 账单总结。
 
@@ -472,6 +521,9 @@ def _get_ai_summary(report_text, date_str, ai_config):
         region = arn_parts[3] if len(arn_parts) > 3 and arn_parts[3] else (os.environ.get('AWS_REGION') or 'us-east-1')
         client = boto3.client('bedrock-agentcore', region_name=region)
         prompt = f"以下是 {date_str} 的 Bedrock 对账数据，请生成中文摘要：\n\n{report_text}"
+        month_context = _build_month_context(datetime.now(timezone.utc))
+        if month_context:
+            prompt += f"\n\n{month_context}"
         payload = json.dumps({
             'model_id': ai_config['model_id'],
             'prompt': prompt,
