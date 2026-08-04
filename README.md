@@ -437,9 +437,14 @@ STACK_UPDATE_ROLE_ARN=$(aws cloudformation describe-stacks \
   --query 'Stacks[0].Outputs[?OutputKey==`StackUpdateRoleArn`].OutputValue' \
   --output text)
 
+# 模板超过 51,200 字节直传上限，CLI 必须经 S3 中转；此桶常驻复用
+export DEPLOY_BUCKET="cfn-deploy-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION:-$(aws configure get region)}"
+aws s3 mb "s3://${DEPLOY_BUCKET}" 2>/dev/null || true
+
 # 回退到指定版本（跳过自动升级逻辑）
 aws cloudformation deploy \
   --template-file template.yaml \
+  --s3-bucket "$DEPLOY_BUCKET" \
   --stack-name bedrock-cost-guard \
   --parameter-overrides SourceRevision=<已知可用的 commit sha> \
   --capabilities CAPABILITY_NAMED_IAM \
@@ -455,7 +460,11 @@ aws cloudformation deploy \
 **1. 部署时改 `GitHubOwner`**，否则你的栈会从上游仓库拉代码，你自己的改动会在下次自动更新时被覆盖：
 
 ```bash
-aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard \
+# 模板超过 51,200 字节直传上限，CLI 必须经 S3 中转；此桶常驻复用
+export DEPLOY_BUCKET="cfn-deploy-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION:-$(aws configure get region)}"
+aws s3 mb "s3://${DEPLOY_BUCKET}" 2>/dev/null || true
+
+aws cloudformation deploy --template-file template.yaml --s3-bucket "$DEPLOY_BUCKET" --stack-name bedrock-cost-guard \
   --parameter-overrides GitHubOwner=你的用户名 AllowedCidrs=1.2.3.4/32 \
   --capabilities CAPABILITY_NAMED_IAM
 ```
@@ -524,6 +533,10 @@ cfn-lint template.yaml
 > 以下命令面向 fork 维护者；终端用户的部署、指定版本和删除操作以 [DEPLOY-GUIDE.md](DEPLOY-GUIDE.md) 为准。
 
 ```bash
+# 模板超过 51,200 字节直传上限，CLI 必须经 S3 中转；此桶常驻复用
+export DEPLOY_BUCKET="cfn-deploy-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION:-$(aws configure get region)}"
+aws s3 mb "s3://${DEPLOY_BUCKET}" 2>/dev/null || true
+
 # 手动触发一次升级检查（等同于页面上的「立即更新」）
 aws lambda invoke --function-name bedrock-cost-guard-updater \
   --payload '{"action":"upgrade_now"}' --cli-binary-format raw-in-base64-out /dev/null
@@ -532,7 +545,7 @@ aws lambda invoke --function-name bedrock-cost-guard-updater \
 aws lambda invoke --function-name bedrock-cost-guard-reconciler --region us-east-1 /dev/null
 
 # 部署指定版本（绕过自动升级，用于回退或测试）
-aws cloudformation deploy --template-file template.yaml --stack-name bedrock-cost-guard \
+aws cloudformation deploy --template-file template.yaml --s3-bucket "$DEPLOY_BUCKET" --stack-name bedrock-cost-guard \
   --parameter-overrides SourceRevision=<commit sha 或 tag> --capabilities CAPABILITY_NAMED_IAM
 
 # 删除所有资源

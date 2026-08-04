@@ -30,13 +30,20 @@ Bedrock 用量管控工具——帮你监控 Claude 等模型的调用费用，�
 git clone https://github.com/huizi-2003/sample-cost-guard-for-amazon-bedrock.git
 cd sample-cost-guard-for-amazon-bedrock
 
+# 模板超过 51,200 字节直传上限，CLI 必须经 S3 中转；此桶常驻复用
+export DEPLOY_BUCKET="cfn-deploy-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION:-$(aws configure get region)}"
+aws s3 mb "s3://${DEPLOY_BUCKET}" 2>/dev/null || true
+
 # 部署（把 YOUR_IP 替换成第 2 步拿到的 IP）
 aws cloudformation deploy \
   --template-file template.yaml \
+  --s3-bucket "$DEPLOY_BUCKET" \
   --stack-name bedrock-cost-guard \
   --parameter-overrides AllowedCidrs=YOUR_IP/32 \
   --capabilities CAPABILITY_NAMED_IAM
 ```
+
+模板注释即文档，体积已超 CloudFormation 直传上限（51,200 字节），`--s3-bucket` 不可省略。该桶只做 CLI 上传模板的中转，可长期复用，也可与其他项目共用；栈运行用的 `CodeBucket` 是另一个由栈自管的桶，两者互不相干。
 
 等 3~5 分钟即可完成。部署时会自动下载本仓库**最新正式 Release** 的代码，无需手动打包。
 
@@ -75,9 +82,14 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
 只在需要回退或部署特定版本时才需要命令行：
 
 ```bash
+# 模板超过 51,200 字节直传上限，CLI 必须经 S3 中转；此桶常驻复用
+export DEPLOY_BUCKET="cfn-deploy-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION:-$(aws configure get region)}"
+aws s3 mb "s3://${DEPLOY_BUCKET}" 2>/dev/null || true
+
 # 部署指定版本（绕过自动升级）
 aws cloudformation deploy \
   --template-file template.yaml \
+  --s3-bucket "$DEPLOY_BUCKET" \
   --stack-name bedrock-cost-guard \
   --parameter-overrides SourceRevision=<commit sha 或 tag> \
   --capabilities CAPABILITY_NAMED_IAM
@@ -94,8 +106,13 @@ aws cloudformation deploy \
 ```bash
 curl -LO https://raw.githubusercontent.com/huizi-2003/sample-cost-guard-for-amazon-bedrock/main/template.yaml
 
+# 模板超过 51,200 字节直传上限，CLI 必须经 S3 中转；此桶常驻复用
+export DEPLOY_BUCKET="cfn-deploy-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION:-$(aws configure get region)}"
+aws s3 mb "s3://${DEPLOY_BUCKET}" 2>/dev/null || true
+
 aws cloudformation deploy \
   --template-file template.yaml \
+  --s3-bucket "$DEPLOY_BUCKET" \
   --stack-name bedrock-cost-guard \
   --capabilities CAPABILITY_NAMED_IAM
 ```
