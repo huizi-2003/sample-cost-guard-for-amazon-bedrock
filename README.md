@@ -366,7 +366,7 @@ CloudWatch 成本 ≈ 轮询频率 × Region 数 × 各 Region 活跃模型数 �
 
 ### 方式二：CLI 部署（CloudShell 或本地终端）
 
-CLI / CloudShell 部署的分步指引（含从旧版本升级）见 [DEPLOY-GUIDE.md](DEPLOY-GUIDE.md)。
+CLI / CloudShell 部署的分步指引见 [DEPLOY-GUIDE.md](DEPLOY-GUIDE.md)。
 
 ### 参数说明
 
