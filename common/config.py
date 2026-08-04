@@ -199,6 +199,9 @@ def get_reconcile_dates(limit=30):
     return dates[:limit]
 
 
+DEFAULT_AI_MODEL_ID = 'global.amazon.nova-2-lite-v1:0'
+
+
 def get_ai_summary_config():
     """获取 AI 账单总结配置。
 
@@ -207,10 +210,10 @@ def get_ai_summary_config():
     """
     item = get_item('CONFIG', 'ai_summary')
     if not item:
-        return {'enabled': False, 'model_id': 'us.amazon.nova-2-lite-v1:0'}
+        return {'enabled': False, 'model_id': DEFAULT_AI_MODEL_ID}
     return {
         'enabled': item.get('enabled', 'false') == 'true',
-        'model_id': item.get('model_id', 'us.amazon.nova-2-lite-v1:0'),
+        'model_id': item.get('model_id', DEFAULT_AI_MODEL_ID),
     }
 
 

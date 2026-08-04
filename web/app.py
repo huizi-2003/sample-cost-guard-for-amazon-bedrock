@@ -24,7 +24,7 @@ from common.config import (
     get_webhook_config, save_webhook_config,
     get_notify_policy, save_notify_policy,
     get_monitor_enabled, save_monitor_enabled,
-    get_ai_summary_config, save_ai_summary_config,
+    DEFAULT_AI_MODEL_ID, get_ai_summary_config, save_ai_summary_config,
     get_auto_upgrade_config, save_auto_upgrade_config, get_upgrade_history
 )
 from common.release import ReleaseNotFound, get_latest_release
@@ -762,7 +762,7 @@ async def put_config_ai_summary(request: Request):
         return JSONResponse({'error': 'Invalid model_id format'}, status_code=400)
 
     if not model_id:
-        model_id = 'us.amazon.nova-2-lite-v1:0'
+        model_id = DEFAULT_AI_MODEL_ID
 
     save_ai_summary_config(enabled, model_id)
     return {'ok': True, 'enabled': enabled, 'model_id': model_id}

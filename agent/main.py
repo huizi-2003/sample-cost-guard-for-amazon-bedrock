@@ -5,7 +5,7 @@
 
 入口合约：
   POST /invocations
-  Body: {"model_id": "us.amazon.nova-2-lite-v1:0", "prompt": "..."}
+  Body: {"model_id": "global.amazon.nova-2-lite-v1:0", "prompt": "..."}
   Response: "总结文本"
 """
 
@@ -19,18 +19,22 @@ logger = logging.getLogger(__name__)
 
 app = BedrockAgentCoreApp()
 
-SYSTEM_PROMPT = """你会收到 Bedrock 对账数据，包含每日明细和本月累计数据。
-请用一句简洁的中文总结账单情况：
+SYSTEM_PROMPT = """你会收到 Bedrock 对账数据（每日明细 + 本月累计）。你的输出会作为一行补充结论，
+附在一份已包含“昨日费用、本月累计、费用最高模型、对账状态”的确定性摘要下方。
+
+要求：
 1. 只输出一句话，不分点、不换行、不加任何前缀
-2. 必须包含：本月累计费用、昨日费用、费用最高的模型
-3. 昨日费用相比本月日均波动 >20% 或对账差异 >5% 时，在这句话里顺带点出
-4. 不超过 80 字"""
+2. 不要复述具体金额和百分比——这些数字摘要里已经有了，你重复只会产生不一致
+3. 说摘要说不出来的东西：费用趋势（连涨/连跌/平稳）、异常成因（哪个模型驱动了波动）、
+   与本月日均的偏离方向
+4. 没有值得说的异常时，就说费用平稳，不要硬找问题
+5. 不超过 50 字"""
 
 
 @app.entrypoint
 def invoke(payload):
     """Agent 入口，接收 model_id + prompt，返回 AI 生成的总结文本。"""
-    model_id = payload.get("model_id", "us.amazon.nova-2-lite-v1:0")
+    model_id = payload.get("model_id", "global.amazon.nova-2-lite-v1:0")
     prompt = payload.get("prompt", "")
 
     if not prompt:
