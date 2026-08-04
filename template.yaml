@@ -804,6 +804,7 @@ Resources:
     # 剩余资源立即失去删除凭证，栈卡死在 DELETE_FAILED，且重试仍会引用
     # 这个已不存在的角色。Retain 让删栈完整走完，角色残留需手动清理
     # （见 DEPLOY-GUIDE 删栈章节）。
+    UpdateReplacePolicy: Retain
     DeletionPolicy: Retain
     Properties:
       RoleName: !Sub "${AWS::StackName}-stack-update-role"
