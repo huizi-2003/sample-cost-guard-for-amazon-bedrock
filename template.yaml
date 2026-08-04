@@ -799,6 +799,12 @@ Resources:
   # 攻击者拿到的也只是"触发一次栈更新"，而不是账号内的直接写权限。
   StackUpdateRole:
     Type: AWS::IAM::Role
+    # 本角色是栈的粘性 service role，删栈的全过程都靠它执行。若让 CFN 把它
+    # 当作普通资源删除，删除顺序不保证在最后——它一旦先于其他资源被删，
+    # 剩余资源立即失去删除凭证，栈卡死在 DELETE_FAILED，且重试仍会引用
+    # 这个已不存在的角色。Retain 让删栈完整走完，角色残留需手动清理
+    # （见 DEPLOY-GUIDE 删栈章节）。
+    DeletionPolicy: Retain
     Properties:
       RoleName: !Sub "${AWS::StackName}-stack-update-role"
       AssumeRolePolicyDocument:
@@ -840,7 +846,7 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}"
                   - !Sub "arn:${AWS::Partition}:s3:::${CodeBucket}/*"
-              # --- IAM: 仅限本栈前缀的角色（含删栈时删除自己） ---
+              # --- IAM: 仅限本栈前缀的角色（如 code-fetcher-role 等）---
               - Effect: Allow
                 Action:
                   - iam:CreateRole

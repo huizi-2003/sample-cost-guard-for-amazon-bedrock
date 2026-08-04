@@ -113,8 +113,18 @@ aws cloudformation deploy \
 
 ## 删除
 
-不用了可以一键删除所有资源：
+不用了可以一键删除栈内资源：
 
 ```bash
 aws cloudformation delete-stack --stack-name bedrock-cost-guard
+aws cloudformation wait stack-delete-complete --stack-name bedrock-cost-guard
+```
+
+`StackUpdateRole` 是 CloudFormation 删栈全过程使用的 service role，因此模板通过 `DeletionPolicy: Retain` 保留它，避免角色先于其他资源删除而导致栈卡在 `DELETE_FAILED`。删栈成功后，这个角色不会自动删除。
+
+该角色采用固定名称 `<栈名>-stack-update-role`。如果不清理，之后重建同名栈会在 `CreateRole` 阶段报 `EntityAlreadyExists`。确认栈已删除成功后，将以下命令中的 `<栈名>` 替换为实际栈名并执行；必须先删除内联策略，再删除角色：
+
+```bash
+aws iam delete-role-policy --role-name <栈名>-stack-update-role --policy-name StackUpdatePolicy
+aws iam delete-role --role-name <栈名>-stack-update-role
 ```
