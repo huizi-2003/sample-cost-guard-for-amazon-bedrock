@@ -465,18 +465,24 @@ def reconcile_one(start_date, end_date, now):
     }
 
 
-def _get_month_summary(reference_date, overrides=None):
-    """读取报告日期所在月的数据，并用本轮结果覆盖刚写入日期。"""
+def _get_month_summary(reference_date, overrides=None, exclude=None):
+    """读取报告日期所在月的数据，并用本轮结果覆盖刚写入日期。
+
+    exclude 用于剔除未结算日期（T-1）。CE 的 DAILY 数据 T+1 才完整，把 T-1 的
+    0 或残值计进来会拉低日均（例：8/1 $49.23 + 8/2 $15.87 两天日均 $32.55，
+    混进 8/3 的 $0 就变成 $21.70），AI 会据此得出"已低于本月日均"的错误结论。
+    """
     try:
         if isinstance(reference_date, str):
             month_prefix = reference_date[:7]
         else:
             month_prefix = reference_date.strftime('%Y-%m')
+        excluded = set(exclude or ())
         # RECONCILE 记录 90 天 TTL，取满整个保留窗口再按月份筛选，
         # 避免默认小 limit 把目标月较早日期截断，导致月累计偏低。
         dates = sorted(
             date for date in get_reconcile_dates(limit=400)
-            if date.startswith(month_prefix + '-')
+            if date.startswith(month_prefix + '-') and date not in excluded
         )
 
         daily_costs = {}
@@ -496,7 +502,7 @@ def _get_month_summary(reference_date, overrides=None):
         # Query/Scan 默认最终一致；当前 T-2/T-1 刚写完时可能暂不可见。
         # 本轮结果来自同一次 CE 计算，直接覆盖这些日期才能保证手机金额一致。
         for date, result in (overrides or {}).items():
-            if not date.startswith(month_prefix + '-') or result.get('ce_error'):
+            if date in excluded or not date.startswith(month_prefix + '-') or result.get('ce_error'):
                 continue
             if date not in dates:
                 dates.append(date)
@@ -531,7 +537,11 @@ def _get_month_summary(reference_date, overrides=None):
 
 def _build_month_context(now, month_summary=None):
     """把本月确定性汇总转换成 AgentCore 使用的上下文。"""
-    summary = month_summary or _get_month_summary(now)
+    # 兜底自建汇总时同样剔除未结算的 T-1：它的 $0 会出现在"每日费用列表"里，
+    # 并多占一天日均分母，AI 据此会得出"费用下降"的错误结论。
+    summary = month_summary or _get_month_summary(
+        now, exclude={(now - timedelta(days=1)).strftime('%Y-%m-%d')}
+    )
     if not summary or not summary['dates']:
         return None
 
@@ -598,18 +608,41 @@ def _format_reconcile_status(result):
     return f"{state}（差异 {diff:+.2f}%）"
 
 
-def _build_mobile_summary(report_date, current, previous=None, month_summary=None):
-    """构造固定五行手机摘要；完整技术明细只保留在日志和 Web 控制台。"""
+def _load_previous_result(date_str):
+    """从 DDB 读取指定日期的已结算汇总，用作环比基准。
+
+    头条是 T-2，它的前一天（T-3）在更早的运行里已经对过账并落库，直接读库
+    比再查一次 Cost Explorer 更快也更省（CE 每请求 $0.01）。
+    读不到就返回 None，由调用方转成"（前日数据不可用）"，绝不凭空算百分比。
+    """
+    try:
+        records = get_reconcile_by_date(date_str)
+    except Exception as e:
+        logger.warning(f"Failed to load previous summary for {date_str}: {e}")
+        return None
+    summary = records.get('_summary') if records else None
+    if not summary or summary.get('total_actual') is None:
+        return None
+    return {'total_actual': float(summary['total_actual'])}
+
+
+def _build_mobile_summary(report_date, current, previous=None, month_summary=None, cost_label='当日费用'):
+    """构造固定五行手机摘要；完整技术明细只保留在日志和 Web 控制台。
+
+    cost_label 与 previous 解耦：每日运行的头条是已结算日（T-2），标注"已结算"；
+    回填/重跑走默认"当日费用"，措辞不随环比基准是否存在而变。
+    """
     parsed = datetime.strptime(report_date, '%Y-%m-%d')
     date_label = f"{parsed.month} 月 {parsed.day} 日"
+    # 报告日期就在标题行里，金额行不再自称"昨日"：头条用的是已结算日（T-2），
+    # 说"昨日"与实际日期差一天。
     if current.get('ce_error'):
-        cost_line = "当日费用：获取失败" if previous is None else "昨日暂估：获取失败"
+        cost_line = f"{cost_label}：获取失败"
     else:
         cost = float(current.get('total_actual') or 0)
-        if previous is None:
-            cost_line = f"当日费用：${cost:,.2f}"
-        else:
-            cost_line = f"昨日暂估：${cost:,.2f}{_format_change(current, previous)}"
+        cost_line = f"{cost_label}：${cost:,.2f}"
+        if previous is not None:
+            cost_line += _format_change(current, previous)
 
     if month_summary:
         month_total = float(month_summary['total_cost'])
@@ -725,25 +758,47 @@ def handler(event, context):
         ('T-1 (临时·账单可能未结算完)', (now - timedelta(days=1)).strftime('%Y-%m-%d'), now.strftime('%Y-%m-%d')),
     ]
 
-    detail_report = f"[Bedrock 日报] 账号 {get_account_id()}\n"
+    header = f"[Bedrock 日报] 账号 {get_account_id()}\n"
+    detail_report = header
+    sections = []  # 按 job 顺序保存每段正文，供 AI 只取已结算段
     dates = []
     results = []
     for label, start_date, end_date in jobs:
         dates.append(start_date)
-        detail_report += f"\n========== {label}  {start_date} ==========\n"
+        section = f"\n========== {label}  {start_date} ==========\n"
         result = reconcile_one(start_date, end_date, now)
         results.append(result)
         if result.get('ce_error'):
-            detail_report += f"  ⚠ Cost Explorer 查询失败: {result['ce_error']}\n"
+            section += f"  ⚠ Cost Explorer 查询失败: {result['ce_error']}\n"
         else:
-            detail_report += result['msg']
+            section += result['msg']
+        sections.append(section)
+        detail_report += section
+
+    # 手机头条只用已结算日（T-2）。CE 的 DAILY 数据 T+1 才完整，而本 Lambda 在
+    # UTC 01:00 跑，此时 T-1 刚结束一小时，CE 普遍还返回 0 或残值。拿 T-1 当头条
+    # 就会推出"当日费用 $0.00（较前日 ↓100%）"+"对账状态：无用量"这种假结论，
+    # 并把 AI 的趋势判断一起带偏。
+    # T-1 仍照常对账写库（Web 控制台可看暂估值，次日作为 T-2 重算覆盖），只是不上头条。
+    settled_date, settled_result = dates[0], results[0]
+    # AI 只看已结算段。T-1 段的 $0 会被读成"费用骤降"，把整段结论带偏；
+    # detail_report 仍保留双段，只给 logger 用于排查。
+    ai_report = f"{header}{sections[0]}"
 
     month_summary = _get_month_summary(
-        dates[-1],
-        {date: result for date, result in zip(dates, results)},
+        settled_date,
+        {settled_date: settled_result},
+        exclude={dates[-1]},
     )
+    # 环比基准取 T-3（头条 T-2 的前一天），从 DDB 读历史已结算值。
+    # 读不到时传 ce_error 哨兵，让摘要输出"（前日数据不可用）"而不是编一个百分比。
+    prev_date = (now - timedelta(days=3)).strftime('%Y-%m-%d')
     mobile_summary = _build_mobile_summary(
-        dates[-1], results[-1], previous=results[0], month_summary=month_summary,
+        settled_date,
+        settled_result,
+        previous=_load_previous_result(prev_date) or {'ce_error': 'no_record'},
+        month_summary=month_summary,
+        cost_label='费用（已结算）',
     )
 
     # 推送策略判断（先判断是否推送，避免不推送时仍调用 AI 产生模型费用）
@@ -763,7 +818,7 @@ def handler(event, context):
     if should_notify and webhooks:
         ai_config = get_ai_summary_config()
         if ai_config['enabled']:
-            ai_summary = _get_ai_summary(detail_report, ', '.join(dates), ai_config, month_summary)
+            ai_summary = _get_ai_summary(ai_report, settled_date, ai_config, month_summary)
             if ai_summary:
                 mobile_summary += f"\n💡 {ai_summary}"
             else:
