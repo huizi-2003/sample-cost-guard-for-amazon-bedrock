@@ -928,6 +928,7 @@ Resources:
                   - apigateway:POST
                   - apigateway:PUT
                   - apigateway:PATCH
+                  - apigateway:UpdateRestApiPolicy
                   - apigateway:DELETE
                 Resource: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/*"
               # --- AgentCore（这些操作不支持资源级授权，只能 '*'）---
