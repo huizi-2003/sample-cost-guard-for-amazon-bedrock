@@ -1365,7 +1365,7 @@ function escapeHtml(s) {
 async function loadUpgradeHistory() {
   const el = document.getElementById('ver-history');
   try {
-    const resp = await fetch(`${API}/api/upgrade/history?limit=20`);
+    const resp = await fetch(`${API}/api/upgrade/history?limit=5`);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     const list = data.history || [];
