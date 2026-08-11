@@ -21,8 +21,8 @@ PRICING = {
     # GPT-5.5/5.4 无独立 cache-write，故其 cache_write 取 input 价。
     # key 用带变体后缀的完整串(gpt-5.6-sol 等)，避免 5.6 三个变体价格互相串味。
     'gpt-5.6-sol':   {'input': 5.0,  'output': 30.0, 'cache_read': 0.5,  'cache_write': 6.25},
-    'gpt-5.6-terra': {'input': 2.5,  'output': 15.0, 'cache_read': 0.25, 'cache_write': 3.125},
-    'gpt-5.6-luna':  {'input': 1.0,  'output': 6.0,  'cache_read': 0.1,  'cache_write': 1.25},
+    'gpt-5.6-terra': {'input': 2.0,  'output': 12.0, 'cache_read': 0.2,  'cache_write': 2.5},
+    'gpt-5.6-luna':  {'input': 0.2,  'output': 1.2,  'cache_read': 0.02, 'cache_write': 0.25},
     'gpt-5.5': {'input': 5.5,  'output': 33,   'cache_read': 0.55,  'cache_write': 5.5},
     'gpt-5.4': {'input': 2.75, 'output': 16.5, 'cache_read': 0.275, 'cache_write': 2.75},
 }
