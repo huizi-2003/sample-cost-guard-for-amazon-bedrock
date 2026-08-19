@@ -76,6 +76,30 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
 
 > 第一次自动升级之后，栈会永久关联一个专用的 CloudFormation service role。手工操作（含回退、删栈）的行为和注意事项见 README 的[「手动恢复」](README.md#手动恢复)一节。
 
+## 从旧版本手动升级
+
+如果你之前部署的版本**不包含自动升级器（Updater）或 AgentCore**，自动升级机制不存在，需要手动升级一次。方法就是用最新代码重新跑一次 deploy 命令——CloudFormation 会计算差异并增量更新，已有数据（DynamoDB 配置、告警历史）不受影响。
+
+```bash
+# 拉取最新代码
+cd sample-cost-guard-for-amazon-bedrock
+git pull
+
+# 和首次部署完全相同的命令（已有参数会自动保留，无需重复指定）
+export DEPLOY_BUCKET="cfn-deploy-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION:-$(aws configure get region)}"
+aws s3 mb "s3://${DEPLOY_BUCKET}" 2>/dev/null || true
+
+aws cloudformation deploy \
+  --template-file template.yaml \
+  --s3-bucket "$DEPLOY_BUCKET" \
+  --stack-name bedrock-cost-guard \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+> ⏱ 首次引入 AgentCore 时，运行时创建需要额外 8-15 分钟，总耗时比普通更新长，耐心等待即可。
+
+升级完成后，自动升级器（Updater）就位，后续版本会自动安装，不再需要手动操作。
+
 ## 删除
 
 不用了可以一键删除栈内资源：
