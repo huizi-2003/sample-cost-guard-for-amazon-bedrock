@@ -14,13 +14,24 @@ PRICING = {
     'fable':   {'input': 10,  'output': 50,  'cache_read': 1.0,  'cache_write': 12.5},
     'sonnet':  {'input': 3,   'output': 15,  'cache_read': 0.3,  'cache_write': 3.75},
     'haiku':   {'input': 1,   'output': 5,   'cache_read': 0.1,  'cache_write': 1.25},
+    # Amazon Nova。key 用 'nova-2-lite' 而非 'nova'，避免将来加 nova-2-pro 等
+    # 型号时被短 key 抢先命中（match_pricing 是按插入顺序的子串首匹配）。
+    # 价格取 Global CRIS（与本表 cross-region 基准口径一致），已从 Cost Explorer
+    # 的 USE1-Nova2.0Lite-*-cross-region-global 条目反算核对：input 0.30、
+    # output 2.50；in-region 口径为 0.33 / 2.75，按本表惯例忽略这 10% 差异。
+    # cache_write 取 0：账单里 Nova2.0Lite-cache-write-input-token-count 有
+    # 12.876K token 但 cost 为 $0，实测不收费（非"按 input 价计"）。
+    # cache_read 账单中尚无条目可核，暂按 input × 0.1 推导。
+    # 注意这是 Web Console AI 账单总结的默认模型（config.DEFAULT_AI_MODEL_ID），
+    # 本工具自身的 token 消耗也会走这里计价。
+    'nova-2-lite': {'input': 0.30, 'output': 2.50, 'cache_read': 0.03, 'cache_write': 0},
     # OpenAI 模型走 bedrock-mantle 端点，CloudWatch 只发布 TotalInputTokens/
     # TotalOutputTokens（无 cache 拆分），故 cache 命中的 token 会并入 input，
     # 按满价 input 估算（有 cache 时略偏高）。cache_read 价保留仅备将来指标拆分。
     # GPT-5.6 系列(Sol/Terra/Luna)有独立的 30m cache-write 计费；
     # GPT-5.5/5.4 无独立 cache-write，故其 cache_write 取 input 价。
     # key 用带变体后缀的完整串(gpt-5.6-sol 等)，避免 5.6 三个变体价格互相串味。
-    'gpt-5.6-sol':   {'input': 5.0,  'output': 30.0, 'cache_read': 0.5,  'cache_write': 6.25},
+    'gpt-5.6-sol':   {'input': 4.0,  'output': 20.0, 'cache_read': 0.4,  'cache_write': 5.0},
     'gpt-5.6-terra': {'input': 2.0,  'output': 12.0, 'cache_read': 0.2,  'cache_write': 2.5},
     'gpt-5.6-luna':  {'input': 0.2,  'output': 1.2,  'cache_read': 0.02, 'cache_write': 0.25},
     'gpt-5.5': {'input': 5.5,  'output': 33,   'cache_read': 0.55,  'cache_write': 5.5},
