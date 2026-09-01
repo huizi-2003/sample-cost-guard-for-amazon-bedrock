@@ -1,4 +1,5 @@
 import os
+import math
 import boto3
 from boto3.dynamodb.conditions import Key
 
@@ -36,6 +37,10 @@ def put_item(pk, sk, **attrs):
     _get_table().put_item(Item=item)
 
 
+def delete_item(pk, sk):
+    _get_table().delete_item(Key={'PK': pk, 'SK': sk})
+
+
 def query_by_pk(pk):
     table = _get_table()
     all_items = []
@@ -53,15 +58,21 @@ def get_cost_thresholds():
     """费用告警阈值（单位：美元 $）。
 
     存于 PK=COST_THRESHOLD。返回 {window: float}，仅包含已配置的窗口；
-    未配置任何窗口时返回空 dict，供监控据此判断"未配置"并直接通知用户。
+    ≤0 或非有限值视为未配置；未配置任何窗口时返回空 dict，
+    供监控据此判断"未配置"并直接通知用户。
     """
     items = query_by_pk('COST_THRESHOLD')
     result = {}
     for item in items:
         try:
-            result[item['SK']] = float(item['value'])
+            val = float(item['value'])
         except (ValueError, TypeError):
-            pass
+            continue
+        # 0/负数/NaN/inf 都不是可用阈值：0 会导致任何消费都告警（风暴），
+        # 历史版本曾把空输入写成 0，这里过滤掉让存量部署自愈
+        if not math.isfinite(val) or val <= 0:
+            continue
+        result[item['SK']] = val
     return result
 
 

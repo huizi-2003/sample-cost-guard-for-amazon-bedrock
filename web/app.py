@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from common.config import (
     get_cost_thresholds, get_regions, get_reconcile_by_date,
-    get_reconcile_dates, put_item, get_item, query_by_pk,
+    get_reconcile_dates, put_item, delete_item, get_item, query_by_pk,
     get_webhook_config, save_webhook_config,
     get_notify_policy, save_notify_policy,
     get_monitor_enabled, save_monitor_enabled,
@@ -651,9 +651,13 @@ async def get_config_cost_thresholds():
 async def put_config_cost_thresholds(request: Request):
     data = await request.json()
     valid_keys = {'5min', '15min', 'daily'}
+    parsed = {}  # key -> float 或 None（None = 清除该窗口配置）
     for key, val in data.items():
         if key not in valid_keys:
             return JSONResponse({'error': f'Invalid key: {key}, must be one of {valid_keys}'}, status_code=400)
+        if val is None or val == '':
+            parsed[key] = None
+            continue
         try:
             f_val = float(val)
         except (ValueError, TypeError):
@@ -661,11 +665,17 @@ async def put_config_cost_thresholds(request: Request):
         if not math.isfinite(f_val):
             # nan/inf 能通过 float() 但会让 "cost > threshold" 恒为 False，静默关闭告警
             return JSONResponse({'error': f'Invalid value for {key}: must be a finite number'}, status_code=400)
-        if f_val < 0:
-            return JSONResponse({'error': f'Invalid value for {key}: must be non-negative'}, status_code=400)
-    for key, val in data.items():
-        # DynamoDB(resource) 不接受 Python float，统一以字符串存储；读取端 float() 解析
-        put_item('COST_THRESHOLD', key, value=str(float(val)))
+        if f_val <= 0:
+            # 阈值 0 = 任何消费都告警（每 5 分钟一条），只有事故没有用途；
+            # 想取消某窗口的配置请传 null
+            return JSONResponse({'error': f'Invalid value for {key}: must be greater than 0 (use null to unset)'}, status_code=400)
+        parsed[key] = f_val
+    for key, f_val in parsed.items():
+        if f_val is None:
+            delete_item('COST_THRESHOLD', key)
+        else:
+            # DynamoDB(resource) 不接受 Python float，统一以字符串存储；读取端 float() 解析
+            put_item('COST_THRESHOLD', key, value=str(f_val))
     return {'ok': True}
 
 

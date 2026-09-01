@@ -638,16 +638,35 @@ async function loadReconcile(date) {
 // ===== Config =====
 async function loadThresholds() {
   const data = await (await fetch(`${API}/api/config/cost-thresholds`)).json();
-  document.getElementById('th-5min').value = data['5min'] || '';
-  document.getElementById('th-15min').value = data['15min'] || '';
-  document.getElementById('th-daily').value = data['daily'] || '';
+  document.getElementById('th-5min').value = data['5min'] ?? '';
+  document.getElementById('th-15min').value = data['15min'] ?? '';
+  document.getElementById('th-daily').value = data['daily'] ?? '';
 }
 
 async function saveThresholds() {
-  await fetch(`${API}/api/config/cost-thresholds`, {method:'PUT', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({'5min': +document.getElementById('th-5min').value, '15min': +document.getElementById('th-15min').value, 'daily': +document.getElementById('th-daily').value})});
-  document.getElementById('th-msg').innerHTML = '<div class="msg">已保存</div>';
-  setTimeout(() => document.getElementById('th-msg').innerHTML = '', 2000);
+  const msgEl = document.getElementById('th-msg');
+  const showErr = t => { msgEl.innerHTML = '<div class="msg" style="color:#c4442a"></div>'; msgEl.firstChild.textContent = t; };
+  const body = {};
+  for (const [key, id] of Object.entries({'5min': 'th-5min', '15min': 'th-15min', 'daily': 'th-daily'})) {
+    const raw = document.getElementById(id).value.trim();
+    if (raw === '') { body[key] = null; continue; }  // 留空 = 不配置该窗口
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num <= 0) {
+      showErr('阈值必须是大于 0 的数字，留空表示不配置');
+      return;
+    }
+    body[key] = num;
+  }
+  const resp = await fetch(`${API}/api/config/cost-thresholds`, {method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)});
+  if (!resp.ok) {
+    let err = 'HTTP ' + resp.status;
+    try { err = (await resp.json()).error || err; } catch (e) {}
+    showErr('保存失败：' + err);
+    return;
+  }
+  msgEl.innerHTML = '<div class="msg">已保存</div>';
+  setTimeout(() => msgEl.innerHTML = '', 2000);
 }
 
 async function loadRegions() {
