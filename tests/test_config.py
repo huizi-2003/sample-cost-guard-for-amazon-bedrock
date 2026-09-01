@@ -49,6 +49,29 @@ class TestGetCostThresholds:
         from common.config import get_cost_thresholds
         assert get_cost_thresholds() == {}
 
+    def test_filters_non_positive_values(self, mock_dynamodb):
+        """0/负数视为未配置：历史版本曾把空输入写成 0，读取端过滤让存量部署自愈。"""
+        mock_dynamodb.query.return_value = {
+            'Items': [
+                {'PK': 'COST_THRESHOLD', 'SK': '5min', 'value': '0.0'},
+                {'PK': 'COST_THRESHOLD', 'SK': '15min', 'value': '-3'},
+                {'PK': 'COST_THRESHOLD', 'SK': 'daily', 'value': '100'},
+            ]
+        }
+        from common.config import get_cost_thresholds
+        assert get_cost_thresholds() == {'daily': 100.0}
+
+    def test_filters_nan_and_inf_values(self, mock_dynamodb):
+        """nan/inf 能通过 float() 但会让阈值比较恒 False，同样过滤。"""
+        mock_dynamodb.query.return_value = {
+            'Items': [
+                {'PK': 'COST_THRESHOLD', 'SK': '5min', 'value': 'nan'},
+                {'PK': 'COST_THRESHOLD', 'SK': '15min', 'value': 'inf'},
+            ]
+        }
+        from common.config import get_cost_thresholds
+        assert get_cost_thresholds() == {}
+
 
 class TestGetRegions:
     """get_regions: reads CONFIG#regions or writes/returns defaults."""

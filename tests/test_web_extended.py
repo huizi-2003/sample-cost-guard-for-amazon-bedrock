@@ -284,9 +284,13 @@ class TestConfigCostThresholds:
             float(v)  # parseable
 
     @pytest.mark.anyio
-    async def test_put_cost_thresholds_rejects_negative(self, client):
-        resp = await client.put('/api/config/cost-thresholds', json={'5min': -1})
-        assert resp.status_code == 400
+    @patch('web.app.put_item')
+    async def test_put_cost_thresholds_rejects_non_positive(self, mock_put, client):
+        # 0 意味着任何消费都告警（每 5 分钟一条风暴），与负数一样拒绝
+        for bad in (-1, 0, 0.0, '0'):
+            resp = await client.put('/api/config/cost-thresholds', json={'5min': bad})
+            assert resp.status_code == 400, bad
+        mock_put.assert_not_called()
 
     @pytest.mark.anyio
     @patch('web.app.put_item')
@@ -296,6 +300,21 @@ class TestConfigCostThresholds:
             resp = await client.put('/api/config/cost-thresholds', json={'5min': bad})
             assert resp.status_code == 400, bad
         mock_put.assert_not_called()
+
+    @pytest.mark.anyio
+    @patch('web.app.delete_item')
+    @patch('web.app.put_item')
+    async def test_put_null_unsets_threshold(self, mock_put, mock_delete, client):
+        """null / 空字符串 = 清除该窗口配置：走 delete_item，绝不写 0。"""
+        resp = await client.put('/api/config/cost-thresholds',
+                                json={'5min': None, '15min': '', 'daily': 100})
+        assert resp.status_code == 200
+        deleted = {c.args for c in mock_delete.call_args_list}
+        assert deleted == {('COST_THRESHOLD', '5min'), ('COST_THRESHOLD', '15min')}
+        # daily 正常写入，且没有任何窗口被写成 0
+        mock_put.assert_called_once()
+        assert mock_put.call_args.args == ('COST_THRESHOLD', 'daily')
+        assert float(mock_put.call_args.kwargs['value']) == 100.0
 
 
 # === GET/PUT /api/config/webhook ===
