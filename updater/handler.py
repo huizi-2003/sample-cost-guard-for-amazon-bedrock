@@ -54,6 +54,7 @@ from common.config import (
     merge_upgrade_record as merge_history,
     record_upgrade as record_history,
     save_auto_upgrade_config as save_config,
+    try_acquire_upgrade_lock as try_acquire_lock,
 )
 from common.release import (
     ReleaseNotFound, compare_commits, download_file, get_latest_release,
@@ -710,6 +711,14 @@ def check_and_upgrade(event, context):
         save_config(last_check_at=now_iso, last_status=STATUS_SKIPPED, last_error='')
         return {'status': STATUS_SKIPPED, 'reason': '自动升级已关闭'}
 
+    # 已有升级/回退流程持有锁时不进入检查——省掉 GitHub API 调用，
+    # 也避免下面的栈 busy 检查在"栈不 busy 但流程仍活跃"的窗口误放行。
+    # get_config 已对超龄锁做失效过滤，这里读到非空就是活锁。
+    if cfg['current_upgrade_id']:
+        msg = f"已有升级流程进行中（{cfg['current_upgrade_id']}），跳过本次检查"
+        logger.info(msg)
+        return {'status': STATUS_SKIPPED, 'reason': msg}
+
     cfn = _cfn_client()
     lambda_client = _lambda_client()
     s3 = _s3_client()
@@ -778,14 +787,18 @@ def check_and_upgrade(event, context):
         'role_arn': role_arn, 'is_rollback': False, 'hop': 0,
     }
 
+    if not try_acquire_lock(upgrade_id,
+                            last_check_at=now_iso, last_status=STATUS_UPDATING,
+                            last_error='',
+                            last_known_good_sha=cfg['last_known_good_sha'] or current_sha):
+        msg = '另一升级流程刚刚获取了锁，本次退出'
+        logger.warning(msg)
+        return {'status': STATUS_SKIPPED, 'reason': msg}
+    _OWNED_LOCK_ID = upgrade_id
     record_history(upgrade_id, status=STATUS_UPDATING, started_at=now_iso,
                    from_sha=current_sha, from_tag=current_tag, to_sha=target_sha,
                    to_tag=target_tag, changelog=changelog[:8000],
                    commit_count=commit_count, is_rollback='false')
-    save_config(last_check_at=now_iso, last_status=STATUS_UPDATING,
-                last_error='', current_upgrade_id=upgrade_id,
-                last_known_good_sha=cfg['last_known_good_sha'] or current_sha)
-    _OWNED_LOCK_ID = upgrade_id
 
     ok, info = _apply_revision(cfn, s3, stack_name, owner, repo, bucket, region,
                                target_sha, role_arn,

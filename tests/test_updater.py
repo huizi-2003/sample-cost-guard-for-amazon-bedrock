@@ -298,6 +298,40 @@ class TestGating:
         assert 'UPDATE_IN_PROGRESS' in result['reason']
 
     @patch.dict(os.environ, ENV)
+    @patch('updater.handler.get_latest_release')
+    @patch('updater.handler.get_config')
+    def test_active_lock_skips_before_github(self, mock_cfg, mock_rel):
+        """已有活锁 → 直接跳过，连 GitHub 都不该查。"""
+        mock_cfg.return_value = dict(BASE_CFG, current_upgrade_id='2026-09-01T03:00:00Z')
+        result = up.check_and_upgrade({}, _ctx())
+        assert result['status'] == up.STATUS_SKIPPED
+        mock_rel.assert_not_called()
+
+    @patch.dict(os.environ, ENV)
+    @patch('updater.handler.try_acquire_lock', return_value=False)
+    @patch('updater.handler.record_history')
+    @patch('updater.handler._apply_revision')
+    @patch('updater.handler.compare_commits')
+    @patch('updater.handler.get_latest_release')
+    @patch('updater.handler.get_current_version', return_value=('cursha', 'v1'))
+    @patch('updater.handler.get_config', return_value=dict(BASE_CFG))
+    @patch('updater.handler.boto3.client')
+    def test_lost_acquire_race_skips(self, mock_boto, mock_cfg, mock_ver, mock_rel,
+                                     mock_cmp, mock_apply, mock_hist, mock_lock):
+        """检查期间被别人抢到锁 → 退出，不建变更集、不写历史。"""
+        mock_cfn = MagicMock()
+        mock_cfn.describe_stacks.return_value = {'Stacks': [_stack()]}
+        mock_boto.return_value = mock_cfn
+        mock_rel.return_value = {'sha': 'newsha', 'tag': 'v2', 'notes': '', 'published_at': ''}
+        mock_cmp.return_value = {'status': 'ahead', 'ahead_by': 1, 'behind_by': 0, 'commits': ['x']}
+
+        result = up.check_and_upgrade({}, _ctx())
+        assert result['status'] == up.STATUS_SKIPPED
+        mock_apply.assert_not_called()
+        mock_hist.assert_not_called()
+
+    @patch.dict(os.environ, ENV)
+    @patch('updater.handler.try_acquire_lock', return_value=True)
     @patch('updater.handler.record_history')
     @patch('updater.handler.save_config')
     @patch('updater.handler._finish', return_value={'status': 'SUCCESS'})
@@ -309,7 +343,7 @@ class TestGating:
     @patch('updater.handler.boto3.client')
     def test_unknown_current_version_upgrades_to_latest(
             self, mock_boto, mock_cfg, mock_ver, mock_rel, mock_cmp,
-            mock_apply, mock_finish, mock_save, mock_hist):
+            mock_apply, mock_finish, mock_save, mock_hist, mock_lock):
         """当前版本未知（build_info 缺失）→ 视为过期，直接升到最新 Release。
 
         旧行为是阻断，但那会让早于本功能的部署永久卡住、无法自愈。

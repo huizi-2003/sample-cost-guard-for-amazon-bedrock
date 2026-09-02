@@ -2,6 +2,7 @@ import os
 import math
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 TABLE_NAME = os.environ.get('DDB_TABLE', 'bedrock-cost-guard')
 
@@ -315,12 +316,66 @@ def get_auto_upgrade_config():
     }
 
 
+def _upgrade_attr_expr(attrs):
+    """把 attrs 转成 UpdateExpression 三件套（字段名可能撞保留字，全部走别名）。"""
+    names = {f'#k{i}': k for i, k in enumerate(attrs)}
+    values = {f':v{i}': v for i, v in enumerate(attrs.values())}
+    expr = 'SET ' + ', '.join(f'#k{i} = :v{i}' for i in range(len(attrs)))
+    return expr, names, values
+
+
 def save_auto_upgrade_config(**attrs):
-    """局部更新自动升级配置（读-改-写；字段少、写入频率极低，够用）。"""
-    current = get_item('CONFIG', AUTO_UPGRADE_SK) or {}
-    merged = {k: v for k, v in current.items() if k not in ('PK', 'SK')}
-    merged.update(attrs)
-    put_item('CONFIG', AUTO_UPGRADE_SK, **merged)
+    """局部更新自动升级配置（UpdateExpression，只写传入的字段）。
+
+    旧实现是"读整条 → 合并 → 整条 put"，两个入口并发写会把对方刚写入的
+    current_upgrade_id 静默冲掉（丢失更新）。改为 SET 指定字段后，
+    并发写互不覆盖对方的字段。
+    """
+    if not attrs:
+        return
+    expr, names, values = _upgrade_attr_expr(attrs)
+    _get_table().update_item(
+        Key={'PK': 'CONFIG', 'SK': AUTO_UPGRADE_SK},
+        UpdateExpression=expr,
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+
+
+def try_acquire_upgrade_lock(upgrade_id, **attrs):
+    """原子获取升级锁：仅当锁为空/不存在/已超龄时写入 current_upgrade_id。
+
+    upgrade_id 是 '%Y-%m-%dT%H:%M:%SZ' 格式的 ISO 时间戳（见 updater 的
+    _iso()），字典序即时间序，所以"超龄"直接用字符串比较在
+    ConditionExpression 里表达，与 _upgrade_lock_active 的读侧判定同一口径。
+
+    attrs 中的其他字段（last_check_at / last_status 等）随锁一起原子写入。
+    返回 True=拿到锁；False=另一流程持有未超龄的锁。
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(seconds=UPGRADE_LOCK_MAX_AGE_SECONDS)
+              ).strftime('%Y-%m-%dT%H:%M:%SZ')
+    expr, names, values = _upgrade_attr_expr(dict(attrs, current_upgrade_id=upgrade_id))
+    values[':empty'] = ''
+    values[':cutoff'] = cutoff
+    try:
+        _get_table().update_item(
+            Key={'PK': 'CONFIG', 'SK': AUTO_UPGRADE_SK},
+            UpdateExpression=expr,
+            ConditionExpression=(
+                'attribute_not_exists(current_upgrade_id) '
+                'OR current_upgrade_id = :empty '
+                'OR current_upgrade_id < :cutoff'
+            ),
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+        return True
+    except ClientError as exc:
+        if exc.response.get('Error', {}).get('Code') == 'ConditionalCheckFailedException':
+            return False
+        raise
 
 
 def record_upgrade(upgrade_id, **attrs):

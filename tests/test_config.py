@@ -257,3 +257,30 @@ class TestSaveReconcileRecord:
         expected_min = before + 89 * 86400
         expected_max = before + 91 * 86400
         assert expected_min <= expire_at <= expected_max
+
+
+
+class TestTryAcquireUpgradeLock:
+    """try_acquire_upgrade_lock: 条件写拿锁。"""
+
+    def test_acquires_and_returns_true(self, mock_dynamodb):
+        from common.config import try_acquire_upgrade_lock
+        assert try_acquire_upgrade_lock('2026-09-01T03:00:00Z', last_status='UPDATING') is True
+        kwargs = mock_dynamodb.update_item.call_args.kwargs
+        assert 'current_upgrade_id' in str(kwargs['ConditionExpression'])
+        assert '2026-09-01T03:00:00Z' in kwargs['ExpressionAttributeValues'].values()
+
+    def test_returns_false_when_lock_held(self, mock_dynamodb):
+        from botocore.exceptions import ClientError
+        from common.config import try_acquire_upgrade_lock
+        mock_dynamodb.update_item.side_effect = ClientError(
+            {'Error': {'Code': 'ConditionalCheckFailedException'}}, 'UpdateItem')
+        assert try_acquire_upgrade_lock('2026-09-01T03:00:00Z') is False
+
+    def test_other_errors_propagate(self, mock_dynamodb):
+        from botocore.exceptions import ClientError
+        from common.config import try_acquire_upgrade_lock
+        mock_dynamodb.update_item.side_effect = ClientError(
+            {'Error': {'Code': 'ProvisionedThroughputExceededException'}}, 'UpdateItem')
+        with pytest.raises(ClientError):
+            try_acquire_upgrade_lock('2026-09-01T03:00:00Z')
