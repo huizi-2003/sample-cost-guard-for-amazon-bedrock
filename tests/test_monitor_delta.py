@@ -59,6 +59,15 @@ class TestPickBaselines:
         base_5, _ = _pick_baselines(records, now)
         assert base_5['cost_daily'] == '3.0'
 
+    def test_base_5_accepts_record_newer_than_5_minutes(self):
+        """A valid record only 3 minutes old can be used as base_5."""
+        now = datetime(2026, 7, 16, 10, 15, 0, tzinfo=timezone.utc)
+        records = [
+            {'timestamp': '2026-07-16T10:12:00Z', 'complete': True, 'cost_daily': '3.0'},
+        ]
+        base_5, _ = _pick_baselines(records, now)
+        assert base_5 is records[0]
+
     def test_base_15_picks_record_at_least_15min_before_now(self):
         """base_15 should be the latest valid record whose timestamp <= now - 15min."""
         now = datetime(2026, 7, 16, 10, 20, 0, tzinfo=timezone.utc)
