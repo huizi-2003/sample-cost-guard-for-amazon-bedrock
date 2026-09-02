@@ -403,12 +403,11 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     document.getElementById(tab.dataset.panel).classList.add('active');
 
+    if (monitorRefreshTimer) { clearInterval(monitorRefreshTimer); monitorRefreshTimer = null; }
     if (tab.dataset.panel === 'monitor') {
       loadMonitorChart();
       loadTodayCost();
       monitorRefreshTimer = setInterval(() => { loadMonitorChart(); loadTodayCost(); }, 5 * 60 * 1000);
-    } else {
-      if (monitorRefreshTimer) { clearInterval(monitorRefreshTimer); monitorRefreshTimer = null; }
     }
     if (tab.dataset.panel === 'iam-scan') {
       loadIamScan();
