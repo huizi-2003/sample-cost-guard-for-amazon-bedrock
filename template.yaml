@@ -1013,6 +1013,7 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:Query
+                  - dynamodb:UpdateItem
                 Resource: !GetAtt ConfigTable.Arn
               # 健康检查调 Web Lambda，以及超过 15 分钟时自调用续跑
               - Effect: Allow

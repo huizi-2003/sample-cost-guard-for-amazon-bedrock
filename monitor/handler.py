@@ -127,15 +127,22 @@ def _pick_baselines(records, now):
     """从当天已有记录中选出 5min 和 15min 基线。
 
     只认全 region 成功（complete=True）且带 cost_daily 字段的记录。
-    返回 (base_5min, base_15min)，无可用基线返回 None。
+    5min 基线须在 5～10 分钟前，15min 基线须在 15～30 分钟前；
+    范围内无可用记录时返回 None，由调用方执行 warm-up 保护。
     """
     valid = [r for r in records
              if r.get('complete') and 'cost_daily' in r]
     valid.sort(key=lambda r: r['timestamp'])
-    base_5 = valid[-1] if valid else None
-    cutoff = (now - timedelta(minutes=15)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    older = [r for r in valid if r['timestamp'] <= cutoff]
-    base_15 = older[-1] if older else None
+
+    def _cutoff(minutes):
+        return (now - timedelta(minutes=minutes)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    candidates_5 = [r for r in valid
+                    if _cutoff(10) <= r['timestamp'] <= _cutoff(5)]
+    base_5 = candidates_5[-1] if candidates_5 else None
+    candidates_15 = [r for r in valid
+                     if _cutoff(30) <= r['timestamp'] <= _cutoff(15)]
+    base_15 = candidates_15[-1] if candidates_15 else None
     return base_5, base_15
 
 

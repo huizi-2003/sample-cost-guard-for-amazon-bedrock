@@ -86,6 +86,17 @@ class TestPickBaselines:
         _, base_15 = _pick_baselines(records, now)
         assert base_15 is None
 
+    def test_stale_records_are_not_used_as_baselines(self):
+        """Records older than each window's maximum age are ignored."""
+        now = datetime(2026, 7, 16, 10, 20, 0, tzinfo=timezone.utc)
+        records = [
+            {'timestamp': '2026-07-16T09:49:59Z', 'complete': True, 'cost_daily': '1.0'},
+            {'timestamp': '2026-07-16T10:09:59Z', 'complete': True, 'cost_daily': '2.0'},
+        ]
+        base_5, base_15 = _pick_baselines(records, now)
+        assert base_5 is None
+        assert base_15 is None
+
     def test_incomplete_record_between_valid_records_skipped(self):
         """Incomplete records are skipped even if recent."""
         now = datetime(2026, 7, 16, 10, 20, 0, tzinfo=timezone.utc)
@@ -286,9 +297,9 @@ class TestHandlerDeltaAlert:
             'region': 'us-east-1', '5min': 2_000_000, '15min': 2_000_000, 'daily': 2_000_000,
             'models': {'5min': models, '15min': models, 'daily': models},
         }
-        # Previous baseline: $20 daily cost
+        # Previous 5-minute baseline: $20 daily cost
         mock_env['query_by_pk'].return_value = [
-            {'SK': 'T#10:00', 'timestamp': '2026-07-16T10:00:00Z',
+            {'SK': 'T#10:10', 'timestamp': '2026-07-16T10:10:00Z',
              'complete': True, 'cost_daily': '20.0',
              'models_daily': {'claude-sonnet-4': {'input': 0, 'output': 1_300_000, 'cache_read': 0, 'cache_write': 0}}},
         ]
@@ -334,10 +345,10 @@ class TestHandlerDeltaAlert:
         }
         # Most recent record is incomplete → should use the earlier complete one
         mock_env['query_by_pk'].return_value = [
-            {'SK': 'T#09:50', 'timestamp': '2026-07-16T09:50:00Z',
+            {'SK': 'T#10:10', 'timestamp': '2026-07-16T10:10:00Z',
              'complete': True, 'cost_daily': '20.0',
              'models_daily': {'claude-sonnet-4': {'input': 0, 'output': 1_300_000, 'cache_read': 0, 'cache_write': 0}}},
-            {'SK': 'T#10:00', 'timestamp': '2026-07-16T10:00:00Z',
+            {'SK': 'T#10:15', 'timestamp': '2026-07-16T10:15:00Z',
              'complete': False, 'cost_daily': '25.0',
              'models_daily': {'claude-sonnet-4': {'input': 0, 'output': 1_600_000, 'cache_read': 0, 'cache_write': 0}}},
         ]
@@ -365,6 +376,25 @@ class TestHandlerDeltaAlert:
         result = handler({}, None)
 
         # daily=$75 > $50 threshold should still fire; but 5min/15min suppressed by warm-up
+        assert 'daily' in result['alerts']
+        assert '5min' not in result['alerts']
+        assert '15min' not in result['alerts']
+
+    def test_stale_baselines_trigger_warmup_for_short_windows(self, mock_env):
+        """Recovery after a long gap ignores stale baselines but still checks daily cost."""
+        models = {'claude-sonnet-4': {'input': 0, 'output': 5_000_000, 'cache_read': 0, 'cache_write': 0}}
+        mock_env['fetch_region'].return_value = {
+            'region': 'us-east-1', '5min': 5_000_000, '15min': 5_000_000, 'daily': 5_000_000,
+            'models': {'5min': models, '15min': models, 'daily': models},
+        }
+        mock_env['query_by_pk'].return_value = [
+            {'SK': 'T#08:00', 'timestamp': '2026-07-16T08:00:00Z',
+             'complete': True, 'cost_daily': '1.0'},
+        ]
+
+        from monitor.handler import handler
+        result = handler({}, None)
+
         assert 'daily' in result['alerts']
         assert '5min' not in result['alerts']
         assert '15min' not in result['alerts']
@@ -459,7 +489,7 @@ class TestHandlerDeltaAlert:
         # Baseline: opus already had 9.5M output, sonnet had 0
         # So delta: opus = 500K output ($7.5), sonnet = 2M output ($30) → sonnet is top
         mock_env['query_by_pk'].return_value = [
-            {'SK': 'T#10:00', 'timestamp': '2026-07-16T10:00:00Z',
+            {'SK': 'T#10:10', 'timestamp': '2026-07-16T10:10:00Z',
              'complete': True, 'cost_daily': '100.0',
              'models_daily': {
                  'claude-opus-4': {'input': 0, 'output': 9_500_000, 'cache_read': 0, 'cache_write': 0},
