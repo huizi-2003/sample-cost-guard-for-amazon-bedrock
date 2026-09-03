@@ -732,10 +732,30 @@ function collectWebhookItems() {
 
 async function saveWebhook() {
   const items = collectWebhookItems().filter(i => i.url);
-  await fetch(`${API}/api/config/webhook`, {method:'PUT', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(items)});
-  document.getElementById('wh-msg').innerHTML = `<div class="msg">已保存 ${items.length} 个渠道</div>`;
-  setTimeout(() => document.getElementById('wh-msg').innerHTML = '', 2000);
+  const msgEl = document.getElementById('wh-msg');
+  const showError = message => {
+    msgEl.innerHTML = '<div class="msg" style="color:#dc3545"></div>';
+    msgEl.firstChild.textContent = message;
+  };
+  try {
+    const resp = await fetch(`${API}/api/config/webhook`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(items)
+    });
+    if (!resp.ok) {
+      let err = `HTTP ${resp.status}`;
+      try { err = (await resp.json()).error || err; } catch (e) {}
+      showError(`保存失败：${err}`);
+      return;
+    }
+    const data = await resp.json();
+    msgEl.innerHTML = '<div class="msg"></div>';
+    msgEl.firstChild.textContent = `已保存 ${data.count} 个渠道`;
+    setTimeout(() => msgEl.innerHTML = '', 2000);
+  } catch (e) {
+    console.error('saveWebhook failed:', e);
+    showError('保存失败：网络或服务异常');
+  }
 }
 
 // ===== Monitor Enabled Toggle =====
@@ -773,10 +793,15 @@ async function saveMonitorEnabled() {
   const enabled = toggle.checked;
   updateMonitorToggleUI(enabled);
   try {
-    await fetch(`${API}/api/config/monitor-enabled`, {
+    const resp = await fetch(`${API}/api/config/monitor-enabled`, {
       method: 'PUT', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({enabled})
     });
+    if (!resp.ok) {
+      let err = `HTTP ${resp.status}`;
+      try { err = (await resp.json()).error || err; } catch (e) {}
+      throw new Error(err);
+    }
   } catch (e) {
     console.error('saveMonitorEnabled failed:', e);
     // 回滚 UI
