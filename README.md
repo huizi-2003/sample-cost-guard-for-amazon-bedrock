@@ -56,8 +56,8 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 - **Delta 增量告警**（5min / 15min / daily 三层阈值，单位为美元 $）：
   - 5min/15min 窗口：比较当前 daily 累计与基线记录的**增量**（delta = 当前累计 - 基线累计），增量超阈值才告警，避免累计值持续触发
   - daily 窗口：直接比较当日累计总量
-  - 基线选取：从当天已有完整记录中取最近 5min/15min 内的快照
-  - warm-up 保护：无有效基线时跳过 5min/15min 判定，避免冷启动误报
+  - 基线选取：只认当天 `complete=true`（全 Region 查询成功）且带 `cost_daily` 字段的记录；5min 基线取 **10 分钟内**最新一条，15min 基线取 **15～30 分钟前**最新一条
+  - warm-up 保护：当天已有记录但对应窗口基线缺失时，跳过该窗口判定，避免冷启动误报；当天完全无记录（UTC 午夜后首轮）时，全天累计本身即为增量，照常判定
 - 告警附带 Top Region + Top Model 明细
 - 告警抑制（15min/daily 窗口避免重复轰炸）
 - **数据持久化**：每次运行结果写入 DynamoDB（PK=`MONITOR#{date}`, SK=`T#{HH:MM}`），含 5min 总量、daily 累计、各模型按 token 类型拆分明细（input/output/cache_read/cache_write），2 天 TTL 自动过期
@@ -72,7 +72,8 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 - CloudWatch 查询的 Region 从 CE 账单的 USAGE_TYPE 前缀自动推导（账单里有哪些区域就查哪些，37 个前缀映射），无需手动配置
 - 按模型拆分费用明细，每模型展示 5 种 token 类型：input / output / cache_read / cache_write / cache_write_1h
 - 对账结果 + CE 原始明细 + CW 各 region 明细 全部存入 DynamoDB（90 天 TTL）
-- 每日推送合并报告（两个日期的 token 对账差异 + 费用明细），不管差异多少都推
+- 每日推送固定五行手机摘要（标题日期 / 已结算日 T-2 费用 + 环比 / 本月累计 / 本月费用最高模型及占比 / 对账状态），不管差异多少都推
+- 双日期的逐模型明细、CE/CW 原始数据不进推送，只写入 DynamoDB 和 CloudWatch Logs，在 Web Console 查看
 - **手动触发模式**：传入 `event.date` 可单独对账指定日期；`event.silent = true` 时不推送通知（Web Console 批量回填历史数据时使用，避免刷屏）
 
 #### 对账原理与计算规则
@@ -112,7 +113,9 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 
   模型名提取 (extract_model_identity)：
     1. 去掉 region 前缀（第一个 '-' 之前：USE1-, USW2-, EUW1-...）
-    2. 去掉 token 类型段（长段优先匹配，保留路由后缀如 cross-region-global）：
+    2. 去掉末尾的 -standard 层级后缀（仅当出现在末尾时）
+    3. 原地剔除 token 类型段（长段优先匹配，只剔第一处，保留其后的路由后缀
+       如 cross-region-global）：
        -cache-read-input-token-count
        -cache-write-1h-input-token-count
        -cache-write-input-token-count
@@ -125,7 +128,7 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
        -output-token-count
        -input-tokens
        -output-tokens
-    3. 去掉 -standard 后缀，清理双连字符
+    4. 清理剔除后出现的双连字符和首尾连字符
 
   Token 类型判断 (get_token_type)：
     含 "cache-read" / "cacheread" → cache_read
@@ -161,6 +164,9 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 
   reconcile_diff_pct = (CE_total - CW_total) / CW_total × 100
 
+  仅在 CE_total > 0、CW_total > 0 且没有任何 Region 查询失败时才计算；
+  否则留空（_summary 里不写该字段），推送里显示"无法计算"。
+
   预期结果：diff ≈ 0%
   实测：2026-06-23 CE=32,873,693, CW=32,873,693, diff=0.00%
   实测：2026-06-24 CE=22,968,294, CW=22,968,294, diff=0.00%
@@ -181,13 +187,15 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
     tokens_input_1k, tokens_output_1k, tokens_cache_read_1k, tokens_cache_write_1k, tokens_cache_write_1h_1k
   
   SK = _summary → 当日汇总
-    total_actual, model_count, ce_token_total, cw_token_total, reconcile_diff_pct
+    total_actual, model_count, ce_token_total, cw_token_total
+    reconcile_diff_pct（仅在可计算时写入，见上方对账公式）
   
   SK = _ce_detail → CE 原始明细 (JSON)
     [{usage_type, cost, quantity, unit}, ...]
   
   SK = _cw_detail → CW 各 region 明细 (JSON)
     {region: token_count, ...}
+    有 Region 查询失败时额外含 _failed: "region1,region2"
 ```
 
 ### 3. Web Console — 管理界面
@@ -203,12 +211,12 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
   - 可展开 CW 各 region 明细（每 region 的 token 总量）
   - 对账指标卡片（总费用、模型数、CE/CW token 总量、对账差异百分比）
   - 历史回填功能：指定天数批量触发 reconciler 补录历史数据
-- **今日监控**（滚动 24 小时窗口）：
-  - **预估费用卡片**（最近 24h 预估总费用、Top 模型费用、未定价模型数）
+- **实时监控**（滚动 24 小时窗口）：
+  - **预估费用卡片**（24h 预估费用、费用最高的模型、累计 Token）
   - **累计费用趋势线**（按 5 分钟粒度，滚动 24h，实时更新）
   - 每小时用量图表（模型维度堆叠，增量展示）
   - 每 5 分钟自动刷新
-- **配置管理**：阈值、监控 Region 列表、Webhook 设置
+- **配置管理**：监控总开关 + 三层告警阈值、通知渠道（Webhook）、日报推送策略、AI 账单总结、监控 Region 列表
 - **版本管理**：
   - **自动更新**（默认开启）：每周自动检查 GitHub Release 并整栈升级，用户无需操作
   - 更新记录时间线：每次检查/更新的时间、结果、更新内容（来自 Release notes），可展开查看
@@ -242,31 +250,33 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 - 工作日判断数据来源：[NateScarlet/holiday-cn](https://github.com/NateScarlet/holiday-cn)（自动跟踪国务院公告）
 - **用量告警不受此策略影响，始终实时推送，不可关闭**（`never` 也只关日报，不关告警）
 - 策略仅控制 reconciler 日报推送；对账数据无论是否推送都会正常写入 DynamoDB
-- **AI 账单总结**（可选，默认关闭）：日报推送时可在末尾附加一段 AI 生成的中文费用摘要（以 `📊 AI 总结：` 开头，详见 [功能 6](#6-ai-账单总结--每日报告-ai-洞察可选)）。它只在"确定推送日报"后才调用——`workday`/`never` 当天不推送时不会调用，也不产生模型费用
+- **AI 账单总结**（可选，默认关闭）：日报推送时可在末尾附加一行 AI 生成的中文结论（以 `💡 ` 开头，详见 [功能 6](#6-ai-账单总结--每日报告-ai-洞察可选)）。它只在"确定推送日报且已配置 Webhook"后才调用——`workday`/`never` 当天不推送时不会调用，也不产生模型费用
 
 ### 5. IAM 权限扫描 — Bedrock 调用权限审计
 
 被盗刷时第一步：快速定位账号内**谁能调用 Bedrock 产生费用**。
 
 - Web Console 第 5 个 tab，点按钮即扫描
-- 遍历所有 IAM Users / Roles / Groups 的托管策略 + 内联策略
-- **只标记危险 Action**：`bedrock:Invoke*`、`bedrock:Converse*`、`bedrock:*`、`*` 等能产生调用的权限；过滤掉只读的 `List*/Get*`
+- 遍历所有 IAM Users / Roles / Groups 的托管策略 + 内联策略（跳过 AWS Service-Linked Roles）
+- **只标记危险 Action**：维护一份"能产生调用/费用"的 Action 清单（`InvokeModel*` / `Converse*` / `InvokeAgent` / `InvokeFlow` / `InvokeInlineAgent` / `Retrieve*` / `Rerank` / `ApplyGuardrail` / `Create*Job` / `CreateProvisionedModelThroughput`），并按 IAM 通配语义匹配 `bedrock:*`、`*` 这类写法；只读的 `List*/Get*` 不在清单内
+- 不做 Deny 抵扣：`Allow` 命中即上报（含 `Allow + NotAction`），宁可多报不漏报
 - 显示每个身份的策略来源（哪个 Policy 授予的、是否通过 Group 继承）
 - Role 附带信任关系（谁能 assume）；Group 附带成员列表
-- 扫描结果持久化到 DynamoDB，无 TTL，直到下次点击扫描覆盖
+- 读不到的托管策略记入 `unreadable_policies`，作为审计盲区标注出来
+- 扫描结果持久化到 DynamoDB（PK=`IAM_SCAN`），无 TTL，直到下次点击扫描覆盖
 - 异步执行（Lambda 自调用），支持 IAM 身份数百个的大型账号
 
 ### 6. AI 账单总结 — 每日报告 AI 洞察（可选）
 
-每日对账完成、且**确定要推送日报**时，可选调用 AI 对当日账单生成一段中文摘要，附加到日报末尾（以 `📊 AI 总结：` 开头）。默认关闭。
+每日对账完成、且**确定要推送日报**时，可选调用 AI 对当日账单生成一行中文结论，附加到五行日报末尾（以 `💡 ` 开头）。默认关闭。
 
-- **部署形态**：独立的 [Strands](https://strandsagents.com/) Agent（`agent/main.py`）运行在 **Amazon Bedrock AgentCore Runtime** 上，随主栈由 CloudFormation 一起部署（`AWS::BedrockAgentCore::Runtime` + `RuntimeEndpoint`，代码打包为 `agent.zip` 上传 S3）。reconciler 通过 `bedrock-agentcore:InvokeAgentRuntime` 调用 endpoint，调用 Region 从 endpoint ARN 自动解析（支持非 us-east-1 部署，解析失败回退 Lambda 运行 Region）
-- **摘要内容**（System Prompt 约束，≤200 字）：今日总费用 → Top 3 费用最高的模型 → 对账差异（CE vs CW）>5% 时提醒 → 总费用环比 >20% 时给出趋势提示
+- **部署形态**：独立的 [Strands](https://strandsagents.com/) Agent（`agent/main.py`）运行在 **Amazon Bedrock AgentCore Runtime** 上，随主栈由 CloudFormation 一起部署（`AWS::BedrockAgentCore::Runtime`，代码由 CodeFetcher 预装依赖后打包为 `agent.zip` 上传 S3）。模板**刻意不声明 `RuntimeEndpoint`**——具名端点无法声明式跟随最新 runtime 版本；reconciler 直接拿 runtime ARN 以 `qualifier=DEFAULT` 调用 `bedrock-agentcore:InvokeAgentRuntime`，调用 Region 从 ARN 第 4 段自动解析（支持非 us-east-1 部署，解析失败回退 Lambda 运行 Region）
+- **摘要内容**（System Prompt 约束，≤50 字、一句话、不分点不换行）：明确要求**不复述金额和百分比**（这些确定性五行摘要里已有），只补充摘要说不出来的东西——费用趋势（连涨/连跌/平稳）、哪个模型驱动了波动、与本月日均的偏离方向；无异常时直说费用平稳
 - **配置**（DDB `CONFIG#ai_summary`，Web Console「AI 账单总结」卡片）：
   - `enabled`：是否开启，**默认关闭**
-  - `model_id`：用于生成摘要的 Bedrock 模型（默认 Claude Sonnet；Web 界面提供 Nova / Claude / DeepSeek 选项，Nova Lite 稳态下每月费用不到 $0.1）
-- **成本控制**：仅在"确定会推送日报"时才调用 AI——若因通知策略（`workday`/`never`）当天不推送，则跳过 AI 调用，不产生任何模型费用
-- **容错**：AI 调用失败时返回空并仅记录日志，不阻塞日报正常推送
+  - `model_id`：用于生成摘要的 Bedrock 模型，**默认 `global.amazon.nova-2-lite-v1:0`**（Nova 2 Lite，稳态下每月费用不到 $0.1）；Web 界面另提供 Claude Sonnet 5 / DeepSeek R1 选项
+- **成本控制**：仅在"确定会推送日报且已配置 Webhook"时才调用 AI——若因通知策略（`workday`/`never`）当天不推送，则跳过 AI 调用，不产生任何模型费用
+- **容错**：AI 调用失败时返回空并仅记录日志，日报照常推送（只是少了那一行）
 - **前置条件**：所选 `model_id` 需已在部署 Region 开通 Bedrock 模型访问权限
 
 ### 7. Log Explorer — 调用日志查询（规划中）
@@ -314,7 +324,7 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 | 基础设施 | CloudFormation | 纯 serverless，无服务器管理 |
 | 自动升级 | Change Set + 独立 service role | 跟随 GitHub Release，健康检查失败自动回退 |
 | 通知 | Webhook（DDB 配置） | 飞书 / 钉钉 / 企微 |
-| AI 总结 | AgentCore Runtime + Strands Agent | reconciler 可选调用，生成日报中文费用摘要 |
+| AI 总结 | AgentCore Runtime + Strands Agent | reconciler 可选调用，在日报末尾附加一行中文结论 |
 | 代码来源 | GitHub Release | 部署时按不可变 commit SHA 拉取，无需打包 |
 
 ## 成本估算
@@ -478,7 +488,7 @@ aws cloudformation deploy --template-file template.yaml --s3-bucket "$DEPLOY_BUC
 ```
 git tag v2026.08.03.1 && git push origin v2026.08.03.1
       ↓
-GitHub Actions（.github/workflows/release.yml）自动跑 cfn-lint + pytest
+GitHub Actions（.github/workflows/release.yml）自动跑 cfn-lint + pytest + 模板大小校验（template.yaml >1MB 直接失败）
       ↓  失败 → 不创建 Release，什么都不会发出去
       ↓  通过
 创建 draft Release（notes 预填 commit 列表作为草稿）
@@ -516,7 +526,7 @@ Release notes 会**直接显示给非技术用户**，所以请写面向用户�
 
 ```bash
 pip install -r requirements-dev.txt -r web/requirements.txt
-python -m pytest tests/ -q      # 418 个测试
+python -m pytest tests/ -q      # 全量单元测试
 cfn-lint template.yaml
 ```
 
@@ -559,9 +569,10 @@ bedrock-cost-guard/
 ├── README.md
 ├── DEPLOY-GUIDE.md        # 部署指南（快速上手）
 ├── template.yaml          # CloudFormation 模板（自包含：自动建桶 + 拉代码 + 部署）
+├── requirements-dev.txt   # 本地开发/测试依赖
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml         # push main / PR：cfn-lint + pytest
+│       ├── ci.yml         # push main / PR / 手动触发：cfn-lint + pytest
 │       └── release.yml    # push tag v*：验证通过后创建 draft Release
 ├── common/
 │   ├── __init__.py
@@ -583,15 +594,18 @@ bedrock-cost-guard/
 │   ├── __init__.py
 │   └── handler.py         # 自动升级控制器 Lambda（Change Set + 健康检查 + 回退）
 ├── agent/                 # AI 账单总结 Agent（部署到 AgentCore Runtime）
-│   ├── main.py            # Strands Agent 入口（接收对账数据，生成中文摘要）
-│   └── pyproject.toml     # Agent 依赖声明（AgentCore Runtime 自动安装）
+│   ├── main.py            # Strands Agent 入口（接收对账数据，生成一句话结论）
+│   ├── requirements.txt   # Agent 依赖（部署时由 CodeFetcher 预装进 agent.zip）
+│   └── pyproject.toml     # 项目元数据（不参与部署构建）
 ├── web/
 │   ├── app.py             # FastAPI 后端
 │   ├── requirements.txt
 │   └── static/
-│       ├── index.html     # 管理页面（费用总览 + 历史对账 + 今日监控 + 配置管理 + 版本管理）
+│       ├── index.html     # 管理页面（费用总览 + 历史对账 + 实时监控 + 配置管理 + 权限扫描 + 版本管理）
 │       └── chart.min.js   # Chart.js 图表库
-├── tests/                 # 单元测试（417 个）
+├── tests/                 # 单元测试
+│   ├── __init__.py
+│   ├── conftest.py
 │   ├── test_config.py
 │   ├── test_monitor.py
 │   ├── test_monitor_delta.py
@@ -607,6 +621,7 @@ bedrock-cost-guard/
 │   ├── test_iam_scanner.py
 │   ├── test_pricing.py
 │   ├── test_notify_policy.py
+│   ├── test_holiday.py
 │   ├── test_labels.py
 │   └── test_version.py    # 版本管理 API + Release 通道
 └── docs/                  # 设计文档
