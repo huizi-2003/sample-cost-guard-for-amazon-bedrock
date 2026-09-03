@@ -412,10 +412,17 @@ Updater Lambda 检查最新 Release
       ↓
 安全检查通过后自动执行整栈更新
       ↓
-调用 /api/health 验证应用真的活着
+调用 /api/health 验证应用真的活着（最多 3 次，间隔 10s）
       ↓
 通过 → 记录为"已知可用版本"　　失败 → 自动回退到上一个可用版本
 ```
+
+健康检查不走公网：updater 构造一个合成的 API Gateway 代理事件，直接 `lambda:InvokeFunction`
+调用 Web Lambda（`updater/handler.py` 的 `_health_event` / `health_check`），因此**绕过 API Gateway
+和 IP 白名单**——`AllowedCidrs` 配成什么都不影响升级校验，检查的是"新代码能不能起来并返回
+`statusCode=200`"，不是"公网可达性"。每次重试前会检查 Lambda 剩余执行时间，预算不足时放弃
+重试并按失败处理（有 `last_known_good_sha` 时照常回退），失败详情里会注明是"没来得及查"
+而不是"新版本真的坏了"。
 
 在 Web Console 的「版本管理」页可以：关闭自动更新、点「立即更新」、查看更新记录和每次更新的内容。
 
