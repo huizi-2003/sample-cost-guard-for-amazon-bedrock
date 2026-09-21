@@ -14,12 +14,10 @@ AWS Bedrock 用量管控工具集：用量监控、每日对账、Web 管理界�
   - [4. 通知推送](#4-通知推送)
   - [5. IAM 权限扫描](#5-iam-权限扫描--bedrock-调用权限审计)
   - [6. AI 账单总结](#6-ai-账单总结--每日报告-ai-洞察可选)
-  - [7. Log Explorer — 调用日志查询（规划中）](#7-log-explorer--调用日志查询规划中)
 - [技术架构](#技术架构)
 - [成本估算](#成本估算)
 - [部署](#部署)
 - [自动更新](#自动更新)
-- [维护者指南（fork 后必读）](#维护者指南fork-后必读)
 - [目录结构](#目录结构)
 
 ## 为什么需要这个项目
@@ -279,12 +277,6 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 - **容错**：AI 调用失败时返回空并仅记录日志，日报照常推送（只是少了那一行）
 - **前置条件**：所选 `model_id` 需已在部署 Region 开通 Bedrock 模型访问权限
 
-### 7. Log Explorer — 调用日志查询（规划中）
-
-- 数据源：Bedrock Invocation Log (S3) + CloudTrail (S3)
-- 查询引擎：Athena
-- 按 requestId / 用户 / 模型 / 时间范围查询
-
 ## 技术架构
 
 ```
@@ -469,105 +461,6 @@ aws cloudformation deploy \
 ```
 
 如果 `StackUpdateRole` 本身缺少完成恢复或删栈所需的权限，**只改用管理员凭证执行 CLI 并不会绕过它**。此时需要准备一个允许 `cloudformation.amazonaws.com` 扮演、且权限足够的 CloudFormation service role，并通过 `--role-arn <service-role-arn>` 显式指定。新角色会成为该栈后续操作使用的关联角色，请谨慎操作。
-
-## 维护者指南（fork 后必读）
-
-如果你 fork 了本项目并希望自己维护版本，有三件事必须做：
-
-**1. 部署时改 `GitHubOwner`**，否则你的栈会从上游仓库拉代码，你自己的改动会在下次自动更新时被覆盖：
-
-```bash
-# 模板超过 51,200 字节直传上限，CLI 必须经 S3 中转；此桶常驻复用
-export DEPLOY_BUCKET="cfn-deploy-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION:-$(aws configure get region)}"
-aws s3 mb "s3://${DEPLOY_BUCKET}" 2>/dev/null || true
-
-aws cloudformation deploy --template-file template.yaml --s3-bucket "$DEPLOY_BUCKET" --stack-name bedrock-cost-guard \
-  --parameter-overrides GitHubOwner=你的用户名 AllowedCidrs=1.2.3.4/32 \
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-**2. 在你的仓库里创建至少一个 Release**。`SourceRevision` 留空时会查 `/releases/latest`，你的 fork 默认没有任何 Release，部署会失败。
-
-**3. 按下面的流程发版**，否则用户永远停在旧版本（而且是静默的，没有任何报错）。
-
-### 发版流程
-
-```
-git tag v2026.08.03.1 && git push origin v2026.08.03.1
-      ↓
-GitHub Actions（.github/workflows/release.yml）自动跑 cfn-lint + pytest + 模板大小校验（template.yaml >1MB 直接失败）
-      ↓  失败 → 不创建 Release，什么都不会发出去
-      ↓  通过
-创建 draft Release（notes 预填 commit 列表作为草稿）
-      ↓
-把 notes 改写成面向用户的说明，点 Publish
-      ↓
-各部署的栈在下一次每周检查时自动升级
-```
-
-两个关键点：
-
-- **CI 是门禁。** 一个坏 Release 会自动进入所有用户的账号，所以创建 Release 前必须先通过测试和模板校验。
-- **draft 是暂存区。** `/releases/latest` 端点会跳过 draft 和 prerelease，因此 draft 状态下代码已打 tag、已验证，但一个用户都收不到。点 Publish 那一刻才算真正发布。
-
-版本号用 `vYYYY.MM.DD.N` 格式，`N` 是当天第几次发版、**从 1 开始且首版也要带**（例如 `v2026.08.03.1`）。三条理由：日期让用户一眼看出自己的部署有多旧，这是这个项目最有用的信息，semver 那套兼容性契约在这儿没有下游消费者；序号永远带，规则就没有例外，不会有人以为 `.1` 另有含义；`v` 前缀是承重的，CodeFetcher 用 `^[0-9a-f]{7,40}$` 区分"这是 SHA 还是 tag"，去掉 `v` 之后 `20260803` 八位全是 hex 字符，会被当成 commit SHA，版本名就丢了。
-
-Release notes 会**直接显示给非技术用户**，所以请写面向用户的说明，而不是 `fix: ...` 这类 commit 前缀。
-
-想先在自己的栈上验证再放给用户：把 Release 勾选为 **prerelease**。`/releases/latest` 会跳过它，普通用户看不见；你自己的测试栈用 `SourceRevision=<该 tag>` 显式部署即可。
-
-### 改模板时的一条硬规则
-
-**任何需要 `StackUpdateRole` 新增权限才能创建的资源，必须显式写 `DependsOn: StackUpdateRole`。**
-
-原因：自动升级时改栈的不是 Updater，而是 CloudFormation 扮演的 `StackUpdateRole`，而执行本次变更集的是**升级前**那个还没有新权限的角色版本。同一个变更集里既要给角色加权限、又要用这个权限建资源，顺序错了就是 AccessDenied → 整栈回滚。
-
-举例：`UpdaterAsyncConfig`（`AWS::Lambda::EventInvokeConfig`）需要 `lambda:PutFunctionEventInvokeConfig`，所以它同时依赖 `StackUpdateRole`。
-
-两个容易踩的坑：
-
-- **别指望拆成两个 Release 解决。** Updater 只跳到**最新** Release，不逐个走。停在旧版本的用户会直接跳到最新版，把中间那个"只加权限"的版本整个跳过，面对的还是同一个合并变更集。`DependsOn` 对任意跳版路径都成立，两段发布不成立。
-- **权限要覆盖完整生命周期，不只是 create。** CloudFormation 对同一资源的 create / update / read / delete 往往调不同的 API（例如 EventInvokeConfig 的 update 用 `UpdateFunctionEventInvokeConfig` 而非 `Put`）。缺 update 权限，以后改一个属性就升级失败；缺 delete 权限更糟——service role 一旦关联就永久黏在栈上、删栈也走它，会变成 `DELETE_FAILED`，一个删不掉的栈比升级失败难处理得多。
-
-### 本地开发
-
-```bash
-pip install -r requirements-dev.txt -r web/requirements.txt
-python -m pytest tests/ -q      # 全量单元测试
-cfn-lint template.yaml
-```
-
-### 部署后
-
-栈 Outputs 中的 `WebConsoleUrl` 即为管理界面地址（HTTPS），通过它配置：
-- Webhook URL + 渠道类型（feishu / dingtalk / wecom）
-- 监控 Region 列表
-- 阈值
-- 自动更新开关
-
-**升级不需要手工操作** —— 系统每周一自动检查 GitHub Release 并整栈升级，失败会自动回退。详见 [自动更新](#自动更新)。
-
-> 以下命令面向 fork 维护者；终端用户的部署、指定版本和删除操作以 [DEPLOY-GUIDE.md](DEPLOY-GUIDE.md) 为准。
-
-```bash
-# 模板超过 51,200 字节直传上限，CLI 必须经 S3 中转；此桶常驻复用
-export DEPLOY_BUCKET="cfn-deploy-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION:-$(aws configure get region)}"
-aws s3 mb "s3://${DEPLOY_BUCKET}" 2>/dev/null || true
-
-# 手动触发一次升级检查（等同于页面上的「立即更新」）
-aws lambda invoke --function-name bedrock-cost-guard-updater \
-  --payload '{"action":"upgrade_now"}' --cli-binary-format raw-in-base64-out /dev/null
-
-# 手动触发对账（不用等定时任务）
-aws lambda invoke --function-name bedrock-cost-guard-reconciler --region us-east-1 /dev/null
-
-# 部署指定版本（绕过自动升级，用于回退或测试）
-aws cloudformation deploy --template-file template.yaml --s3-bucket "$DEPLOY_BUCKET" --stack-name bedrock-cost-guard \
-  --parameter-overrides SourceRevision=<commit sha 或 tag> --capabilities CAPABILITY_NAMED_IAM
-
-# 删除所有资源
-aws cloudformation delete-stack --stack-name bedrock-cost-guard
-```
 
 ## 目录结构
 
