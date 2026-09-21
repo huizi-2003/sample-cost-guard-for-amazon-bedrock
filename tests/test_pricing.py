@@ -9,10 +9,20 @@ class TestMatchPricing:
         assert match_pricing('us.anthropic.claude-haiku-4-5') == PRICING['haiku']
         assert match_pricing('claude-fable-5') == PRICING['fable']
 
+    def test_fable_5_1_gets_specific_price(self):
+        # 5.1 只有 cache_read 降到 0.25；必须优先于泛 'fable' 命中，且不影响 Fable 5
+        assert match_pricing('global.anthropic.claude-fable-5-1') == PRICING['fable-5-1']
+        assert match_pricing('claude-fable-5') == PRICING['fable']
+
     def test_matches_openai_mantle_models(self):
         # bedrock-mantle 端点的 OpenAI 模型（label 形如 'openai.gpt-5.5'）也须命中价目表
         assert match_pricing('openai.gpt-5.5') == PRICING['gpt-5.5']
         assert match_pricing('openai.gpt-5.4') == PRICING['gpt-5.4']
+
+    def test_matches_gpt6_astra_on_both_endpoints(self):
+        # GPT-6 Astra 同时上 bedrock-runtime（带 us./global. 前缀）与 bedrock-mantle
+        assert match_pricing('openai.gpt-6-astra') == PRICING['gpt-6-astra']
+        assert match_pricing('global.openai.gpt-6-astra') == PRICING['gpt-6-astra']
 
     def test_unknown_returns_none(self):
         # 未收录的 mantle 模型仍返回 None（费用按 0，计入 unpriced 提示）

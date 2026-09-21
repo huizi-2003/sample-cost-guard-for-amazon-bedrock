@@ -11,6 +11,9 @@ TOKEN_TYPES = ('input', 'output', 'cache_read', 'cache_write')
 
 PRICING = {
     'opus':    {'input': 5,   'output': 25,  'cache_read': 0.5,  'cache_write': 6.25},
+    # Fable 5.1 与 Fable 5 仅 cache_read 不同（0.25 vs 1.0，Anthropic 挂牌价降 75%），
+    # 其余 input/output/cache_write 一致。必须排在 'fable' 之前，否则会被短 key 抢先命中。
+    'fable-5-1': {'input': 10,  'output': 50,  'cache_read': 0.25, 'cache_write': 12.5},
     'fable':   {'input': 10,  'output': 50,  'cache_read': 1.0,  'cache_write': 12.5},
     'sonnet':  {'input': 3,   'output': 15,  'cache_read': 0.3,  'cache_write': 3.75},
     'haiku':   {'input': 1,   'output': 5,   'cache_read': 0.1,  'cache_write': 1.25},
@@ -36,6 +39,12 @@ PRICING = {
     'gpt-5.6-luna':  {'input': 0.2,  'output': 1.2,  'cache_read': 0.02, 'cache_write': 0.25},
     'gpt-5.5': {'input': 5.5,  'output': 33,   'cache_read': 0.55,  'cache_write': 5.5},
     'gpt-5.4': {'input': 2.75, 'output': 16.5, 'cache_read': 0.275, 'cache_write': 2.75},
+    # GPT-6 Astra（2026-09-08 上线）同时支持 bedrock-runtime（须用 us./global.
+    # 推理配置）与 bedrock-mantle。取 Global CRIS 短上下文(≤272K input)价：
+    # input 10 / 30m cache-write 12.5 / cache-read 1 / output 50；In-Region 与
+    # Geo CRIS 为 ×1.1，按本表惯例忽略。>272K 长上下文档位（20/25/2/75）CW 指标
+    # 区分不出，统一按短上下文估算，长上下文请求会被低估。
+    'gpt-6-astra': {'input': 10.0, 'output': 50.0, 'cache_read': 1.0, 'cache_write': 12.5},
 }
 
 
