@@ -18,6 +18,7 @@ AWS Bedrock 用量管控工具集：用量监控、每日对账、Web 管理界�
 - [成本估算](#成本估算)
 - [部署](#部署)
 - [自动更新](#自动更新)
+- [删除](#删除)
 - [目录结构](#目录结构)
 
 ## 为什么需要这个项目
@@ -354,7 +355,7 @@ CloudWatch 成本 ≈ 轮询频率 × Region 数 × 各 Region 活跃模型数 �
 
 > 💡 **获取你的公网 IP**：浏览器打开 https://checkip.amazonaws.com/ ，显示的即为你的出口 IP，填入 `AllowedCidrs` 时加上 `/32` 后缀。注意：如果使用 CloudShell 部署，不要在 CloudShell 里 curl 这个地址——那拿到的是 AWS 的 IP，不是你浏览器的。
 
-### 方式一：CloudFormation 控制台上传（最快，无需 CLI / 无需 S3）
+### 方式一：CloudFormation 控制台上传（最快，无需 CLI / 无需自己准备 S3 桶）
 
 1. 下载模板文件 [`template.yaml`](https://raw.githubusercontent.com/huizi-2003/sample-cost-guard-for-amazon-bedrock/main/template.yaml)（右键另存，或 `curl -O`）。
 2. 打开 [CloudFormation 控制台 → Create stack](https://console.aws.amazon.com/cloudformation/home#/stacks/create) → **With new resources (standard)**。
@@ -365,10 +366,51 @@ CloudWatch 成本 ≈ 轮询频率 × Region 数 × 各 Region 活跃模型数 �
 7. 等待 3-5 分钟，在 **Outputs** 标签找到 `WebConsoleUrl` 即为管理界面地址。
 
 > 部署过程中模板会自动从 GitHub 下载 monitor/reconciler/web 代码，无需手动打包。
+>
+> 控制台的「Upload a template file」并不是真正的直传：控制台会自动把文件上传到一个它自己管理的 S3 桶（`cf-templates-xxxx-<region>`）再引用，因此走的是 1 MB 的 S3 模板上限，而不是 51,200 字节的请求体上限。这也是为什么控制台不受模板体积影响，而下面的 CLI 方式必须自己指定 `--s3-bucket`。
 
 ### 方式二：CLI 部署（CloudShell 或本地终端）
 
-CLI / CloudShell 部署的分步指引见 [DEPLOY-GUIDE.md](DEPLOY-GUIDE.md)。
+推荐使用 **CloudShell**：登录 AWS Console → 右上角点击 `>_` 图标（或搜索 CloudShell），无需安装任何东西。
+
+```bash
+# 克隆代码
+git clone https://github.com/huizi-2003/sample-cost-guard-for-amazon-bedrock.git
+cd sample-cost-guard-for-amazon-bedrock
+
+# 模板超过 51,200 字节直传上限，CLI 必须经 S3 中转；此桶常驻复用
+export DEPLOY_BUCKET="cfn-deploy-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION:-$(aws configure get region)}"
+aws s3 mb "s3://${DEPLOY_BUCKET}" 2>/dev/null || true
+
+# 部署（把 YOUR_IP 替换成你的公网 IP）
+aws cloudformation deploy \
+  --template-file template.yaml \
+  --s3-bucket "$DEPLOY_BUCKET" \
+  --stack-name bedrock-cost-guard \
+  --parameter-overrides AllowedCidrs=YOUR_IP/32 \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+`--s3-bucket` 不可省略：`aws cloudformation deploy` 不带它时会把模板内容直接塞进 API 请求，受 51,200 字节上限约束，会报 `Template size exceeds limit`。该桶只做 CLI 上传模板的中转，可长期复用，也可与其他项目共用；栈运行用的 `CodeBucket` 是另一个由栈自管的桶，两者互不相干。
+
+等 3~5 分钟完成后，取管理界面地址：
+
+```bash
+aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
+  --query 'Stacks[0].Outputs[?OutputKey==`WebConsoleUrl`].OutputValue' --output text
+```
+
+### 首次配置
+
+打开管理界面后，在「配置管理」页设置：
+- **Webhook URL**：填你的飞书/钉钉/企微机器人地址（用于接收告警）
+- **渠道类型**：选 feishu / dingtalk / wecom
+- 阈值和监控区域有默认值，可按需调整
+
+部署后系统会自动：
+- 每 5 分钟监控 Bedrock 用量（超阈值推送告警）
+- 每天 UTC 01:00（北京时间 09:00）自动对账
+- 每周一 UTC 03:00（北京时间 11:00）检查并安装新版本（见[自动更新](#自动更新)）
 
 ### 参数说明
 
@@ -462,12 +504,53 @@ aws cloudformation deploy \
 
 如果 `StackUpdateRole` 本身缺少完成恢复或删栈所需的权限，**只改用管理员凭证执行 CLI 并不会绕过它**。此时需要准备一个允许 `cloudformation.amazonaws.com` 扮演、且权限足够的 CloudFormation service role，并通过 `--role-arn <service-role-arn>` 显式指定。新角色会成为该栈后续操作使用的关联角色，请谨慎操作。
 
+### 从旧版本手动升级
+
+如果你之前部署的版本**不包含自动升级器（Updater）或 AgentCore**，自动升级机制不存在，需要手动升级一次。方法就是用最新代码重新跑一次 deploy 命令——CloudFormation 会计算差异并增量更新，已有数据（DynamoDB 配置、告警历史）不受影响。
+
+```bash
+# 拉取最新代码
+cd sample-cost-guard-for-amazon-bedrock
+git pull
+
+# 和首次部署完全相同的命令（已有参数会自动保留，无需重复指定）
+export DEPLOY_BUCKET="cfn-deploy-$(aws sts get-caller-identity --query Account --output text)-${AWS_REGION:-$(aws configure get region)}"
+aws s3 mb "s3://${DEPLOY_BUCKET}" 2>/dev/null || true
+
+aws cloudformation deploy \
+  --template-file template.yaml \
+  --s3-bucket "$DEPLOY_BUCKET" \
+  --stack-name bedrock-cost-guard \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+> ⏱ 首次引入 AgentCore 时，运行时创建需要额外 8-15 分钟，总耗时比普通更新长，耐心等待即可。
+
+升级完成后，自动升级器（Updater）就位，后续版本会自动安装，不再需要手动操作。
+
+## 删除
+
+不用了可以一键删除栈内资源：
+
+```bash
+aws cloudformation delete-stack --stack-name bedrock-cost-guard
+aws cloudformation wait stack-delete-complete --stack-name bedrock-cost-guard
+```
+
+`StackUpdateRole` 是 CloudFormation 删栈全过程使用的 service role，因此模板通过 `DeletionPolicy: Retain` 保留它，避免角色先于其他资源删除而导致栈卡在 `DELETE_FAILED`。删栈成功后，这个角色不会自动删除。
+
+该角色采用固定名称 `<栈名>-stack-update-role`。如果不清理，之后重建同名栈会在 `CreateRole` 阶段报 `EntityAlreadyExists`。确认栈已删除成功后，将以下命令中的 `<栈名>` 替换为实际栈名并执行；必须先删除内联策略，再删除角色：
+
+```bash
+aws iam delete-role-policy --role-name <栈名>-stack-update-role --policy-name StackUpdatePolicy
+aws iam delete-role --role-name <栈名>-stack-update-role
+```
+
 ## 目录结构
 
 ```
 bedrock-cost-guard/
 ├── README.md
-├── DEPLOY-GUIDE.md        # 部署指南（快速上手）
 ├── template.yaml          # CloudFormation 模板（自包含：自动建桶 + 拉代码 + 部署）
 ├── requirements-dev.txt   # 本地开发/测试依赖
 ├── .github/
