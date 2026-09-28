@@ -220,7 +220,7 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
   - **自动更新**（默认开启）：每周自动检查 GitHub Release 并整栈升级，用户无需操作
   - 更新记录时间线：每次检查/更新的时间、结果、更新内容（来自 Release notes），可展开查看
   - 页面开关可随时关闭自动更新，也可点「立即更新」手动触发
-  - 版本号显示 Release tag（如 `v2026.08.03.1`），构建时由 CodeFetcher 固化进 `common/build_info.py`，无需手动维护
+  - 版本号显示 Release tag（如 `v26.09.28.1`），构建时由 CodeFetcher 固化进 `common/build_info.py`，无需手动维护
   - 堆栈名称、最后更新时间、IP 白名单（读取 CloudFormation 栈参数）
   - 检查结果缓存 1 小时（DynamoDB），GitHub 不可达时回退过期缓存
   - 详见 [自动更新](#自动更新)
