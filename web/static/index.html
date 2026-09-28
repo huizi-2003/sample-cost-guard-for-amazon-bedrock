@@ -1048,10 +1048,15 @@ async function loadMonitorChart() {
 }
 
 function shortenModelName(name) {
-  name = name.replace(/^(us\.|global\.)/, '');
+  // Geo CRIS 前缀：us./eu./au./jp.（Opus 5.5 起新增 au./jp.）及 global.
+  name = name.replace(/^(us\.|eu\.|au\.|jp\.|global\.)/, '');
   name = name.replace(/-\d{8}-v\d+:\d+$/, '');
   name = name.replace(/-v\d+$/, '');
   // 缩短 reconciler 生成的模型身份名
+  name = name.replace('anthropic.claude-opus-5-5-mantle-global', 'Opus 5.5 (mantle-global)');
+  name = name.replace('anthropic.claude-opus-5-5-mantle', 'Opus 5.5 (mantle)');
+  name = name.replace('claude5.5opus-cross-region-global', 'Opus 5.5 (cross-region)');
+  name = name.replace('claude5.5opus', 'Opus 5.5 (direct)');
   name = name.replace('anthropic.claude-opus-4-8-mantle-global', 'Opus 4.8 (mantle-global)');
   name = name.replace('anthropic.claude-opus-4-8-mantle', 'Opus 4.8 (mantle)');
   name = name.replace('claude4.6opus-cross-region-global', 'Opus 4.6 (cross-region)');

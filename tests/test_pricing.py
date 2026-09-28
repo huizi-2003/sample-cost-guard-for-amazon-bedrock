@@ -9,6 +9,14 @@ class TestMatchPricing:
         assert match_pricing('us.anthropic.claude-haiku-4-5') == PRICING['haiku']
         assert match_pricing('claude-fable-5') == PRICING['fable']
 
+    def test_opus_5_5_gets_specific_price(self):
+        # Opus 5.5 全线降价，必须优先于泛 'opus' 命中；bedrock-runtime（带 global./
+        # 地域前缀）与 bedrock-mantle 两种 label 形态都要命中，且不影响 Opus 4.x
+        assert match_pricing('claude-opus-5-5') == PRICING['opus-5-5']
+        assert match_pricing('jp.claude-opus-5-5') == PRICING['opus-5-5']
+        assert match_pricing('global.anthropic.claude-opus-5-5') == PRICING['opus-5-5']
+        assert match_pricing('global.anthropic.claude-opus-4-8') == PRICING['opus']
+
     def test_fable_5_1_gets_specific_price(self):
         # 5.1 只有 cache_read 降到 0.25；必须优先于泛 'fable' 命中，且不影响 Fable 5
         assert match_pricing('global.anthropic.claude-fable-5-1') == PRICING['fable-5-1']

@@ -10,6 +10,10 @@ cache_write 统一用 5min 标准价格。
 TOKEN_TYPES = ('input', 'output', 'cache_read', 'cache_write')
 
 PRICING = {
+    # Opus 5.5（2026-09-22 上线）是首个降价的 Opus：input/output/cache_write 较
+    # Opus 5 降 20%，cache_read 降 60%。取 Global CRIS 价（Geo CRIS / in-region
+    # 为 ×1.1，按本表惯例忽略）。必须排在 'opus' 之前，否则会被短 key 抢先命中。
+    'opus-5-5': {'input': 4,   'output': 20,  'cache_read': 0.2,  'cache_write': 5.0},
     'opus':    {'input': 5,   'output': 25,  'cache_read': 0.5,  'cache_write': 6.25},
     # Fable 5.1 与 Fable 5 仅 cache_read 不同（0.25 vs 1.0，Anthropic 挂牌价降 75%），
     # 其余 input/output/cache_write 一致。必须排在 'fable' 之前，否则会被短 key 抢先命中。
