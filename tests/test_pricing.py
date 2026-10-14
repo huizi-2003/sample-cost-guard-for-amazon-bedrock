@@ -22,6 +22,22 @@ class TestMatchPricing:
         assert match_pricing('global.anthropic.claude-fable-5-1') == PRICING['fable-5-1']
         assert match_pricing('claude-fable-5') == PRICING['fable']
 
+    def test_haiku_5_5_gets_specific_price(self):
+        # Haiku 5.5 四项全线降为 1/10，必须优先于泛 'haiku' 命中；bedrock-runtime（带
+        # global./地域前缀）与 bedrock-mantle 两种 label 形态都要命中，且不影响 Haiku 4.5
+        assert match_pricing('claude-haiku-5-5') == PRICING['haiku-5-5']
+        assert match_pricing('us.claude-haiku-5-5') == PRICING['haiku-5-5']
+        assert match_pricing('global.anthropic.claude-haiku-5-5') == PRICING['haiku-5-5']
+        assert match_pricing('us.anthropic.claude-haiku-4-5') == PRICING['haiku']
+
+    def test_haiku_5_5_cost_is_tenth_of_haiku_4_5(self):
+        # 同样 1M input + 1M output：Haiku 4.5 = $6，Haiku 5.5 = $0.60
+        tokens = {'input': 1_000_000, 'output': 1_000_000, 'cache_read': 0, 'cache_write': 0}
+        cost_45, _ = estimate_cost({'claude-haiku-4-5': tokens})
+        cost_55, _ = estimate_cost({'claude-haiku-5-5': tokens})
+        assert abs(cost_45 - 6.0) < 1e-9
+        assert abs(cost_55 - 0.6) < 1e-9
+
     def test_matches_openai_mantle_models(self):
         # bedrock-mantle 端点的 OpenAI 模型（label 形如 'openai.gpt-5.5'）也须命中价目表
         assert match_pricing('openai.gpt-5.5') == PRICING['gpt-5.5']

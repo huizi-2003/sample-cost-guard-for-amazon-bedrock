@@ -1061,6 +1061,12 @@ function shortenModelName(name) {
   name = name.replace('anthropic.claude-opus-4-8-mantle', 'Opus 4.8 (mantle)');
   name = name.replace('claude4.6opus-cross-region-global', 'Opus 4.6 (cross-region)');
   name = name.replace('claude4.6opus', 'Opus 4.6 (direct)');
+  // Haiku 5.5：mantle 形态已由账单条目证实；claude5.5haiku 为 bedrock-runtime 直连/
+  // CRIS 的 USAGE_TYPE 推测形态（按 claude4.5haiku / claude5.5opus 规律），待账单核实
+  name = name.replace('anthropic.claude-haiku-5-5-mantle-global', 'Haiku 5.5 (mantle-global)');
+  name = name.replace('anthropic.claude-haiku-5-5-mantle', 'Haiku 5.5 (mantle)');
+  name = name.replace('claude5.5haiku-cross-region-global', 'Haiku 5.5 (cross-region)');
+  name = name.replace('claude5.5haiku', 'Haiku 5.5 (direct)');
   name = name.replace('claude4.6sonnet-cross-region-global', 'Sonnet 4.6 (cross-region)');
   name = name.replace('claude4.6sonnet', 'Sonnet 4.6 (direct)');
   name = name.replace('claude4sonnet', 'Sonnet 4');

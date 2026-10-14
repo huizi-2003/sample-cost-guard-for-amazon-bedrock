@@ -20,6 +20,14 @@ PRICING = {
     'fable-5-1': {'input': 10,  'output': 50,  'cache_read': 0.25, 'cache_write': 12.5},
     'fable':   {'input': 10,  'output': 50,  'cache_read': 1.0,  'cache_write': 12.5},
     'sonnet':  {'input': 3,   'output': 15,  'cache_read': 0.3,  'cache_write': 3.75},
+    # Haiku 5.5（2026-10-07 上线）四项全线降为 Haiku 4.5 的 1/10。取 Global CRIS 价
+    # （Geo CRIS / in-region 为 ×1.1，按本表惯例忽略）。input/output 已从本账户
+    # Cost Explorer 的 USE1-anthropic.claude-haiku-5-5-mantle-*-global-standard
+    # 条目反算核对（恰为 0.10 / 0.50）；cache 两项账单尚无条目，取 Bedrock 挂牌价。
+    # 注意 Haiku 5.5 有长上下文分档：单次 prompt >100K token 时整笔请求按 ×5
+    # （0.50 / 2.50 / 0.05 / 0.625）计费，CW 指标区分不出，统一按 ≤100K 档估算，
+    # 长上下文请求会被低估。必须排在 'haiku' 之前，否则会被短 key 抢先命中。
+    'haiku-5-5': {'input': 0.10, 'output': 0.50, 'cache_read': 0.01, 'cache_write': 0.125},
     'haiku':   {'input': 1,   'output': 5,   'cache_read': 0.1,  'cache_write': 1.25},
     # Amazon Nova。key 用 'nova-2-lite' 而非 'nova'，避免将来加 nova-2-pro 等
     # 型号时被短 key 抢先命中（match_pricing 是按插入顺序的子串首匹配）。
