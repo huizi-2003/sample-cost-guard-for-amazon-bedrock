@@ -1009,7 +1009,8 @@ async def get_version_info():
         logger.warning(f'查询 CloudFormation 栈失败: {e}')
 
     # 最新 Release（带 DDB 缓存）
-    latest, is_stale, no_release = _get_latest_release_cached(upstream_owner, upstream_repo)
+    latest, is_stale, no_release = _get_latest_release_cached(
+        upstream_owner, upstream_repo, build_time=build_time)
     result['latest_stale'] = is_stale
     result['no_release'] = no_release
     if latest:
@@ -1041,26 +1042,41 @@ async def get_version_info():
     return result
 
 
-def _get_latest_release_cached(owner: str, repo: str):
+def _parse_iso(value):
+    """解析 '%Y-%m-%dT%H:%M:%SZ' 时间串，失败返回 None。"""
+    try:
+        dt = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except (ValueError, TypeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _get_latest_release_cached(owner: str, repo: str, build_time: str = ''):
     """获取最新正式 Release，带 DDB 缓存（1h TTL）。
+
+    build_time 是当前部署的构建时间。缓存写入早于它时一律作废：那份缓存
+    是在本次部署之前查的，可能比当前版本还旧——升级后的 1 小时内页面会把
+    旧版本当成"最新版本"，显示出 v新 → v旧 这种反向的"有新版本"。
+    build_time 为空（本地开发 / 旧部署）时不做这项判断。
 
     返回 (release_dict | None, is_stale, no_release):
       - (dict, False, False): 新鲜缓存或刚从 GitHub 拉取
       - (dict, True,  False): GitHub 失败，回退过期缓存
       - (None, False, True):  仓库还没有正式 Release
-      - (None, False, False): 无缓存且 GitHub 不可达
+      - (None, False, False): 无可用缓存且 GitHub 不可达
     """
     now = datetime.now(timezone.utc)
     now_iso = now.strftime('%Y-%m-%dT%H:%M:%SZ')
 
     cached = get_item('CONFIG', 'version_check')
-    if cached and cached.get('latest_sha') and cached.get('checked_at'):
-        try:
-            checked_time = datetime.fromisoformat(cached['checked_at'].replace('Z', '+00:00'))
-            if (now - checked_time).total_seconds() < _VERSION_CACHE_TTL:
-                return _cached_to_release(cached), False, False
-        except (ValueError, TypeError):
-            pass
+    if cached and cached.get('latest_sha'):
+        checked_time = _parse_iso(cached.get('checked_at'))
+        built_time = _parse_iso(build_time) if build_time else None
+        if built_time and checked_time and checked_time < built_time:
+            # 写于本次部署之前：可能比当前版本还旧，连 GitHub 失败时的兜底也不用
+            cached = None
+        elif checked_time and (now - checked_time).total_seconds() < _VERSION_CACHE_TTL:
+            return _cached_to_release(cached), False, False
 
     try:
         latest = get_latest_release(owner, repo)

@@ -282,6 +282,98 @@ class TestReleaseCache:
         assert data['latest_stale'] is True
         assert data['has_update'] is True
 
+    @pytest.mark.anyio
+    @patch('web.app.get_auto_upgrade_config', return_value=DEFAULT_CFG)
+    @patch('common.release.urllib.request.urlopen')
+    @patch('web.app.boto3.client')
+    @patch('web.app.get_item')
+    @patch('web.app.put_item')
+    async def test_cache_older_than_build_refetches(self, mock_put, mock_get_item, mock_boto,
+                                                    mock_urlopen, mock_cfg, client):
+        """缓存未过 TTL 但写于本次部署之前 → 作废重查，不显示反向的"有新版本"。
+
+        复现：10:55 缓存了 v旧，11:41 升级到 v新，页面曾显示 v新 → v旧。
+        """
+        now = datetime.now(timezone.utc)
+        checked = (now - timedelta(minutes=50)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        built = (now - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        mock_get_item.return_value = {
+            'PK': 'CONFIG', 'SK': 'version_check',
+            'latest_sha': 'old_release_sha', 'latest_tag': 'v26.09.28.1', 'checked_at': checked,
+        }
+        mock_boto.return_value = _cfn_empty()
+        mock_urlopen.side_effect = gh_responses(tag='v26.10.25.1', sha='new_release_sha')
+
+        with patch.dict('sys.modules', {'common.build_info': fake_build_info(
+                'new_release_sha', 'v26.10.25.1', built)}), \
+             patch.dict(os.environ, {'STACK_NAME': 'test'}):
+            resp = await client.get('/api/version')
+
+        data = resp.json()
+        assert data['latest_tag'] == 'v26.10.25.1'
+        assert data['latest_stale'] is False
+        assert data['has_update'] is False
+        assert mock_urlopen.call_count == 2
+        mock_put.assert_called()
+
+    @pytest.mark.anyio
+    @patch('web.app.get_auto_upgrade_config', return_value=DEFAULT_CFG)
+    @patch('common.release.urllib.request.urlopen')
+    @patch('web.app.boto3.client')
+    @patch('web.app.get_item')
+    @patch('web.app.put_item')
+    async def test_cache_older_than_build_not_used_as_fallback(self, mock_put, mock_get_item,
+                                                               mock_boto, mock_urlopen,
+                                                               mock_cfg, client):
+        """缓存写于本次部署之前且 GitHub 失败 → 不用它兜底，显示"无法检查更新"。"""
+        now = datetime.now(timezone.utc)
+        checked = (now - timedelta(minutes=50)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        built = (now - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        mock_get_item.return_value = {
+            'PK': 'CONFIG', 'SK': 'version_check',
+            'latest_sha': 'old_release_sha', 'latest_tag': 'v26.09.28.1', 'checked_at': checked,
+        }
+        mock_boto.return_value = _cfn_empty()
+        mock_urlopen.side_effect = URLError('rate limited')
+
+        with patch.dict('sys.modules', {'common.build_info': fake_build_info(
+                'new_release_sha', 'v26.10.25.1', built)}), \
+             patch.dict(os.environ, {'STACK_NAME': 'test'}):
+            resp = await client.get('/api/version')
+
+        data = resp.json()
+        assert data['latest_sha'] is None
+        assert data['latest_stale'] is False
+        assert data['has_update'] is None
+
+    @pytest.mark.anyio
+    @patch('web.app.get_auto_upgrade_config', return_value=DEFAULT_CFG)
+    @patch('common.release.urllib.request.urlopen')
+    @patch('web.app.boto3.client')
+    @patch('web.app.get_item')
+    @patch('web.app.put_item')
+    async def test_cache_newer_than_build_still_hits(self, mock_put, mock_get_item, mock_boto,
+                                                     mock_urlopen, mock_cfg, client):
+        """缓存写于部署之后且未过 TTL → 照常命中，不打 GitHub。"""
+        now = datetime.now(timezone.utc)
+        checked = (now - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        built = (now - timedelta(minutes=50)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        mock_get_item.return_value = {
+            'PK': 'CONFIG', 'SK': 'version_check',
+            'latest_sha': 'sha_x', 'latest_tag': 'v26.10.25.1', 'checked_at': checked,
+        }
+        mock_boto.return_value = _cfn_empty()
+
+        with patch.dict('sys.modules', {'common.build_info': fake_build_info(
+                'sha_x', 'v26.10.25.1', built)}), \
+             patch.dict(os.environ, {'STACK_NAME': 'test'}):
+            resp = await client.get('/api/version')
+
+        data = resp.json()
+        assert data['latest_sha'] == 'sha_x'
+        assert data['has_update'] is False
+        mock_urlopen.assert_not_called()
+
 
 class TestStackInfo:
     """CloudFormation 栈信息读取（白名单、最后更新时间）。"""
