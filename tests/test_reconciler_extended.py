@@ -329,14 +329,14 @@ class TestReconcileOneIntegration:
         ce = MagicMock()
         mock_boto3.client.return_value = ce
         page1 = {
-            'ResultsByTime': [{'Groups': [
+            'ResultsByTime': [{'TimePeriod': {'Start': '2024-07-01', 'End': '2024-07-02'}, 'Groups': [
                 {'Keys': ['USE1-a-input-tokens'],
                  'Metrics': {'UnblendedCost': {'Amount': '1.0'}, 'UsageQuantity': {'Amount': '100', 'Unit': '1K tokens'}}},
             ]}],
             'NextPageToken': 'PAGE2',
         }
         page2 = {
-            'ResultsByTime': [{'Groups': [
+            'ResultsByTime': [{'TimePeriod': {'Start': '2024-07-01', 'End': '2024-07-02'}, 'Groups': [
                 {'Keys': ['USE1-b-output-tokens'],
                  'Metrics': {'UnblendedCost': {'Amount': '2.0'}, 'UsageQuantity': {'Amount': '200', 'Unit': '1K tokens'}}},
             ]}],
@@ -351,6 +351,189 @@ class TestReconcileOneIntegration:
         # 第二次调用带上了 NextPageToken
         second_call_kwargs = ce.get_cost_and_usage.call_args_list[1][1]
         assert second_call_kwargs.get('NextPageToken') == 'PAGE2'
+
+    @patch('reconciler.handler.boto3')
+    def test_ce_by_day_splits_multi_day_window_in_one_request(self, mock_boto3):
+        """回看窗口一次请求拉多天，按 TimePeriod.Start 拆成 {date: rows}；
+        分页时同一日期的分组可能跨页，必须合并到同一天。"""
+        from reconciler.handler import get_cost_explorer_data_by_day
+        ce = MagicMock()
+        mock_boto3.client.return_value = ce
+
+        def group(usage_type, cost, qty):
+            return {'Keys': [usage_type],
+                    'Metrics': {'UnblendedCost': {'Amount': str(cost)},
+                                'UsageQuantity': {'Amount': str(qty), 'Unit': '1K tokens'}}}
+
+        page1 = {
+            'ResultsByTime': [
+                {'TimePeriod': {'Start': '2024-07-01', 'End': '2024-07-02'},
+                 'Groups': [group('USE1-a-input-tokens', 1.0, 100)]},
+                {'TimePeriod': {'Start': '2024-07-02', 'End': '2024-07-03'},
+                 'Groups': []},   # 无用量日也会返回空 Groups
+                {'TimePeriod': {'Start': '2024-07-03', 'End': '2024-07-04'},
+                 'Groups': [group('USE1-a-input-tokens', 3.0, 300)]},
+            ],
+            'NextPageToken': 'PAGE2',
+        }
+        page2 = {
+            'ResultsByTime': [
+                {'TimePeriod': {'Start': '2024-07-03', 'End': '2024-07-04'},
+                 'Groups': [group('USE1-a-output-tokens', 4.0, 40)]},
+            ],
+        }
+        ce.get_cost_and_usage.side_effect = [page1, page2]
+
+        by_day = get_cost_explorer_data_by_day('2024-07-01', '2024-07-04')
+
+        # 整段窗口只发一组分页请求，TimePeriod 是完整窗口而非逐日
+        first_call_kwargs = ce.get_cost_and_usage.call_args_list[0][1]
+        assert first_call_kwargs['TimePeriod'] == {'Start': '2024-07-01', 'End': '2024-07-04'}
+        assert ce.get_cost_and_usage.call_count == 2
+
+        assert sorted(by_day) == ['2024-07-01', '2024-07-02', '2024-07-03']
+        assert [r['cost'] for r in by_day['2024-07-01']] == [1.0]
+        assert by_day['2024-07-02'] == []
+        # 第二页的 7-03 分组合并进了第一页的 7-03
+        assert sorted(r['cost'] for r in by_day['2024-07-03']) == [3.0, 4.0]
+
+    @patch('reconciler.handler._get_table', new=MagicMock())
+    @patch('reconciler.handler.save_reconcile_record')
+    @patch('reconciler.handler.get_cloudwatch_token_total', return_value=(0, [], {}))
+    @patch('reconciler.handler.get_cost_explorer_data')
+    @patch('reconciler.handler.query_by_pk')
+    def test_prefetched_ce_rows_skip_ce_call_and_report_previous_total(
+        self, mock_query, mock_ce, mock_cw, mock_save,
+    ):
+        """每日运行传入预取的 CE 行：不再单独查 CE；覆盖前的旧 _summary 作为 previous_total 返回。
+        这是回看机制的核心：10-09 在 T+2 时 CE 只到账 $1.92，重算后应报告 1.92 → 120.76。"""
+        mock_query.return_value = [
+            {'PK': 'RECONCILE#2026-10-09', 'SK': '_summary', 'total_actual': '1.9236'},
+            {'PK': 'RECONCILE#2026-10-09', 'SK': 'anthropic.claude-opus-5-5-mantle-global', 'actual_cost': '1.9236'},
+        ]
+        rows = [
+            {'usage_type': 'USE1-anthropic.claude-opus-5-5-mantle-cache-write-tokens-global-standard',
+             'cost': 120.76, 'quantity': 15372.0, 'unit': '1K tokens'},
+        ]
+        now = datetime(2026, 10, 13, 1, 0, 0, tzinfo=timezone.utc)
+
+        result = reconcile_one('2026-10-09', '2026-10-10', now, ce_results=rows)
+
+        mock_ce.assert_not_called()
+        assert result['total_actual'] == pytest.approx(120.76)
+        assert result['previous_total'] == pytest.approx(1.9236)
+
+    @patch('reconciler.handler._get_table', new=MagicMock())
+    @patch('reconciler.handler.query_by_pk', new=MagicMock(return_value=[]))
+    @patch('reconciler.handler.save_reconcile_record')
+    @patch('reconciler.handler.get_cloudwatch_token_total', return_value=(0, [], {}))
+    @patch('reconciler.handler.get_cost_explorer_data', return_value=[])
+    def test_first_reconcile_has_no_previous_total(self, mock_ce, mock_cw, mock_save):
+        """首次对账（库里无 _summary）previous_total 为 None，调用方不得据此判定"有变化"。"""
+        now = datetime(2024, 7, 3, 1, 0, 0, tzinfo=timezone.utc)
+        result = reconcile_one('2024-07-01', '2024-07-02', now)
+        assert result['previous_total'] is None
+
+
+# === handler 每日运行：一次 CE 请求 + 回看 ===
+
+
+class TestHandlerLookback:
+    """每日运行必须一次拉取整段窗口，并静默重算 T-3 ~ T-LOOKBACK_DAYS。"""
+
+    @patch('reconciler.handler._load_previous_result', return_value=None)
+    @patch('reconciler.handler._get_month_summary', return_value=None)
+    @patch('reconciler.handler.get_notify_policy', return_value='never')
+    @patch('reconciler.handler.get_account_id', return_value='123456789012')
+    @patch('reconciler.handler.get_webhook_config', return_value=[])
+    @patch('reconciler.handler.send_webhook_all')
+    @patch('reconciler.handler.reconcile_one')
+    @patch('reconciler.handler.get_cost_explorer_data_by_day')
+    def test_one_ce_call_covers_headline_and_lookback(
+        self, mock_ce_by_day, mock_reconcile, mock_send, mock_webhooks,
+        mock_acct, mock_policy, mock_month, mock_prev,
+    ):
+        from reconciler.handler import handler, LOOKBACK_DAYS
+        now = datetime.now(timezone.utc)
+        day = lambda k: (now - timedelta(days=k)).strftime('%Y-%m-%d')
+        mock_ce_by_day.return_value = {day(k): [{'usage_type': f'USE1-m-input-tokens', 'cost': float(k), 'quantity': 1.0, 'unit': '1K tokens'}]
+                                       for k in range(0, LOOKBACK_DAYS + 1)}
+
+        def fake_reconcile(start_date, end_date, now_arg, ce_results=None):
+            # T-5 模拟 CE 补录：库里原来 $1.92，现在 $120.76
+            prev = 1.92 if start_date == day(5) else None
+            total = 120.76 if start_date == day(5) else ce_results[0]['cost']
+            return {'msg': 'x', 'total_actual': total, 'reconcile_diff_pct': 0.0,
+                    'previous_total': prev, 'model_costs': {}}
+        mock_reconcile.side_effect = fake_reconcile
+
+        result = handler({}, None)
+
+        # 整段窗口只发一次 CE 请求：Start = T-LOOKBACK_DAYS，End = 今天
+        mock_ce_by_day.assert_called_once_with(day(LOOKBACK_DAYS), day(0))
+        # T-1 ~ T-LOOKBACK_DAYS 每天各对账一次，且都用预取的行（不再各自查 CE）
+        reconciled = sorted(c.args[0] for c in mock_reconcile.call_args_list)
+        assert reconciled == sorted(day(k) for k in range(1, LOOKBACK_DAYS + 1))
+        for c in mock_reconcile.call_args_list:
+            assert c.kwargs['ce_results'] == mock_ce_by_day.return_value[c.args[0]]
+        # 头条仍是 T-2，回看日期单列
+        assert result['dates'] == [day(2), day(1)]
+        assert result['lookback_dates'] == sorted(day(k) for k in range(3, LOOKBACK_DAYS + 1))
+        assert result['lookback_changes'] == [f"{day(5)}: $1.92 → $120.76"]
+        # 月汇总用本轮回看结果覆盖 DDB 旧值（否则手机上的"本月累计"仍是补录前的数）
+        overrides = mock_month.call_args.args[1]
+        assert day(5) in overrides and overrides[day(5)]['total_actual'] == pytest.approx(120.76)
+        assert day(1) not in overrides and day(2) in overrides
+
+    @patch('reconciler.handler._load_previous_result', return_value=None)
+    @patch('reconciler.handler._get_month_summary', return_value=None)
+    @patch('reconciler.handler.get_notify_policy', return_value='never')
+    @patch('reconciler.handler.get_account_id', return_value='123456789012')
+    @patch('reconciler.handler.get_webhook_config', return_value=[])
+    @patch('reconciler.handler.send_webhook_all')
+    @patch('reconciler.handler.reconcile_one')
+    @patch('reconciler.handler.get_cost_explorer_data_by_day', side_effect=Exception('Throttling'))
+    def test_ce_window_failure_marks_all_days_failed_without_fallback_calls(
+        self, mock_ce_by_day, mock_reconcile, mock_send, mock_webhooks,
+        mock_acct, mock_policy, mock_month, mock_prev,
+    ):
+        """整段 CE 请求失败：所有日期按 ce_error 处理，不再逐日重试（避免 CE 不稳时放大请求数）。"""
+        from reconciler.handler import handler
+        result = handler({}, None)
+        assert result['statusCode'] == 200
+        mock_reconcile.assert_not_called()
+        assert result['lookback_changes'] == []
+
+    @patch('reconciler.handler._load_previous_result', return_value=None)
+    @patch('reconciler.handler._get_month_summary', return_value=None)
+    @patch('reconciler.handler.get_notify_policy', return_value='always')
+    @patch('reconciler.handler.get_ai_summary_config', return_value={'enabled': False, 'model_id': 'm'})
+    @patch('reconciler.handler.get_account_id', return_value='123456789012')
+    @patch('reconciler.handler.get_webhook_config', return_value=[{'url': 'http://t', 'type': 'feishu'}])
+    @patch('reconciler.handler.send_webhook_all')
+    @patch('reconciler.handler.reconcile_one')
+    @patch('reconciler.handler.get_cost_explorer_data_by_day', return_value={})
+    def test_headline_uses_lookback_t3_as_previous_and_drops_settled_label(
+        self, mock_ce_by_day, mock_reconcile, mock_send, mock_webhooks,
+        mock_acct, mock_ai_cfg, mock_policy, mock_month, mock_prev,
+    ):
+        """环比基准直接用本轮回看刚重算的 T-3，不再读库；金额行不再自称"已结算"。"""
+        from reconciler.handler import handler
+        now = datetime.now(timezone.utc)
+        day = lambda k: (now - timedelta(days=k)).strftime('%Y-%m-%d')
+        totals = {day(2): 20.0, day(3): 10.0}
+
+        def fake_reconcile(start_date, end_date, now_arg, ce_results=None):
+            return {'msg': 'x', 'total_actual': totals.get(start_date, 0.0), 'reconcile_diff_pct': 0.0,
+                    'previous_total': None, 'model_costs': {}}
+        mock_reconcile.side_effect = fake_reconcile
+
+        handler({}, None)
+
+        mock_prev.assert_not_called()
+        pushed = mock_send.call_args[0][0]
+        assert '已结算' not in pushed
+        assert '当日费用：$20.00（较前日 ↑100.0%）' in pushed
 
 
 

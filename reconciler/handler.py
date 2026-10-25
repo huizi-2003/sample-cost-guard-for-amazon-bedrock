@@ -13,9 +13,13 @@
      并按 5 种 token 类型分开累计 cost 与 token 量（input/output/cache_read/cache_write/cache_write_1h）
   5. 全部结果存入 DynamoDB，推送报告
 
-为什么查 T-2：
-  CE 的 DAILY 粒度按 UTC 日计，且账单数据 T+1 才完整。
-  Lambda 在 UTC 01:00 跑时，T-2 已完整结束 25+ 小时，数据确保可用。
+为什么头条用 T-2、还要回看 T-3 ~ T-7：
+  CE 的 DAILY 粒度按 UTC 日计，账单数据通常 T+1 才大体完整，所以日报头条用 T-2。
+  但"T+2 一定结算完"并不成立：实测 2026-10-09 在 T+2（10-11 01:00 UTC）时
+  CE 只到账 $1.92，最终为 $120.76；10 月有 1/4 的日期在 T+2 之后仍有小额补录。
+  旧逻辑每个日期只对账两次（T-1、T-2），之后永不重算，晚到的账单就永久丢失，
+  月累计被低估。现在每天一次 CE 请求拉取 T-7 ~ 今天整段（CE 按分页请求计费，
+  $0.01/页，与天数无关），T-3 ~ T-7 静默重算覆盖 DDB，有变化时记日志。
 
 为什么用 UTC 日而非北京日：
   CE 的 TimePeriod 不可配时区，固定按 UTC 解释日期。
@@ -40,15 +44,23 @@ logger.setLevel(logging.INFO)
 BEIJING_TZ = timezone(timedelta(hours=8))
 API_TIMEOUT = Config(connect_timeout=10, read_timeout=30, retries={'max_attempts': 2})
 
+# 每日运行回看的天数：T-1 ~ T-LOOKBACK_DAYS 都会被重算覆盖。
+# 窗口长短不影响 CE 费用（一次请求拉完整段），只影响晚到账单能否被追上。
+LOOKBACK_DAYS = 7
 
-def get_cost_explorer_data(start_date, end_date):
-    """查询 Cost Explorer 获取 Bedrock 按 USAGE_TYPE 的每日费用和用量。
+
+def get_cost_explorer_data_by_day(start_date, end_date):
+    """一次请求查询 [start_date, end_date) 内每个 UTC 日的 Bedrock 费用和用量。
+
+    返回 {date: [{'usage_type', 'cost', 'quantity', 'unit'}, ...]}。
+    CE 按分页请求计费（$0.01/页），与 TimePeriod 跨多少天无关，
+    所以 7 天窗口一次拉完与单日一次同价，比逐日各查一次便宜。
 
     注意 SERVICE 筛选的是 "Amazon Bedrock Service"（Claude 等模型），
     不是 "Amazon Bedrock"（Nova 等模型），两者是不同的 CE Service。
     """
     ce = boto3.client('ce', region_name='us-east-1')
-    results = []
+    by_day = {}
     next_token = None
     # CE 在分组结果超过一页时返回 NextPageToken，必须循环取完，
     # 否则大账号（模型×区域×token类型 组合数多）只会读到第一页，费用被低估。
@@ -64,13 +76,15 @@ def get_cost_explorer_data(start_date, end_date):
             kwargs['NextPageToken'] = next_token
         resp = ce.get_cost_and_usage(**kwargs)
         for result in resp.get('ResultsByTime', []):
+            # DAILY 粒度下每个 ResultsByTime 恰好是一个 UTC 日，Start 即该日期
+            rows = by_day.setdefault(result['TimePeriod']['Start'], [])
             for group in result.get('Groups', []):
                 usage_type = group['Keys'][0]
                 cost = float(group['Metrics']['UnblendedCost']['Amount'])
                 qty_amount = float(group['Metrics']['UsageQuantity']['Amount'])
                 qty_unit = group['Metrics']['UsageQuantity'].get('Unit', '')
                 if cost > 0 or qty_amount > 0:
-                    results.append({
+                    rows.append({
                         'usage_type': usage_type,
                         'cost': cost,
                         'quantity': qty_amount,
@@ -79,7 +93,16 @@ def get_cost_explorer_data(start_date, end_date):
         next_token = resp.get('NextPageToken')
         if not next_token:
             break
-    return results
+    return by_day
+
+
+def get_cost_explorer_data(start_date, end_date):
+    """查询 Cost Explorer 获取 [start_date, end_date) 的 Bedrock 按 USAGE_TYPE 费用和用量（不分日期）。
+
+    单日回填 / 重跑用；每日运行走 get_cost_explorer_data_by_day 一次拉整段窗口。
+    """
+    by_day = get_cost_explorer_data_by_day(start_date, end_date)
+    return [row for date in sorted(by_day) for row in by_day[date]]
 
 
 def fetch_cw_region_total(region, start, end):
@@ -281,10 +304,13 @@ def is_token_usage(usage_type):
     return 'token' in lower and 'searchunits' not in lower
 
 
-def reconcile_one(start_date, end_date, now):
+def reconcile_one(start_date, end_date, now, ce_results=None):
     """对单个日期执行对账并写入 DDB，返回报告正文（不发送 webhook）。
 
-    成功返回 {'msg', 'total_actual', 'reconcile_diff_pct'}；
+    ce_results 为 None 时自行查询 CE（单日回填 / 重跑）；每日运行由调用方
+    一次拉取整段窗口后按日期传入，避免逐日各发一次 CE 请求。
+
+    成功返回 {'msg', 'total_actual', 'reconcile_diff_pct', 'model_costs', 'previous_total'}；
     CE 查询失败返回 {'ce_error': <str>}。
     """
     # CW 时间窗口对齐到同一个 UTC 日
@@ -292,11 +318,12 @@ def reconcile_one(start_date, end_date, now):
     cw_end = datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
 
     # 1. Cost Explorer 真实费用 + 用量
-    try:
-        ce_results = get_cost_explorer_data(start_date, end_date)
-    except Exception as e:
-        logger.error(f"Cost Explorer query failed for {start_date}: {e}")
-        return {'ce_error': str(e)}
+    if ce_results is None:
+        try:
+            ce_results = get_cost_explorer_data(start_date, end_date)
+        except Exception as e:
+            logger.error(f"Cost Explorer query failed for {start_date}: {e}")
+            return {'ce_error': str(e)}
 
     # 2. CloudWatch token 总量（跨 region）
     # region 从 CE 账单的 USAGE_TYPE 前缀自动推导（账单里有哪些区域就查哪些）
@@ -366,9 +393,19 @@ def reconcile_one(start_date, end_date, now):
     # 它们随后会被覆盖）。此处已在 CE 查询成功之后，不会误删好数据。
     old_items = query_by_pk(f'RECONCILE#{start_date}')
     table = _get_table()
+    # 记录覆盖前的旧值：回看重算时据此打一行变化日志，CE 晚到账单的时间线就能在
+    # CloudWatch Logs 里看到（也是日后决定 LOOKBACK_DAYS 能否缩短的依据）。
+    previous_total = None
     for it in old_items:
+        if it['SK'] == '_summary' and it.get('total_actual') is not None:
+            try:
+                previous_total = float(it['total_actual'])
+            except (TypeError, ValueError):
+                previous_total = None
         if not it['SK'].startswith('_'):
             table.delete_item(Key={'PK': it['PK'], 'SK': it['SK']})
+    if previous_total is not None and abs(total_actual - previous_total) >= 0.01:
+        logger.info(f"对账更新 {start_date}: ${previous_total:.2f} → ${total_actual:.2f}")
 
     for model, detail in model_details.items():
         if detail['actual_cost'] < 0.01:
@@ -456,6 +493,8 @@ def reconcile_one(start_date, end_date, now):
         'msg': msg,
         'total_actual': total_actual,
         'reconcile_diff_pct': reconcile_diff_pct,
+        # 覆盖前 DDB 里的旧值（首次对账为 None），供调用方汇总回看变化
+        'previous_total': previous_total,
         # 供本轮月汇总直接覆盖刚写入日期，避免 DDB 最终一致读取短暂漏计。
         'model_costs': {
             model: detail['actual_cost']
@@ -609,10 +648,10 @@ def _format_reconcile_status(result):
 
 
 def _load_previous_result(date_str):
-    """从 DDB 读取指定日期的已结算汇总，用作环比基准。
+    """从 DDB 读取指定日期的汇总，用作环比基准（回看未覆盖到该日期时的兜底）。
 
-    头条是 T-2，它的前一天（T-3）在更早的运行里已经对过账并落库，直接读库
-    比再查一次 Cost Explorer 更快也更省（CE 每请求 $0.01）。
+    头条是 T-2，它的前一天（T-3）正常由本轮回看重算，调用方优先用那个新值；
+    走到这里说明回看失败，退回读库比再查一次 Cost Explorer 更快也更省（CE 每请求 $0.01）。
     读不到就返回 None，由调用方转成"（前日数据不可用）"，绝不凭空算百分比。
     """
     try:
@@ -629,13 +668,13 @@ def _load_previous_result(date_str):
 def _build_mobile_summary(report_date, current, previous=None, month_summary=None, cost_label='当日费用'):
     """构造固定五行手机摘要；完整技术明细只保留在日志和 Web 控制台。
 
-    cost_label 与 previous 解耦：每日运行的头条是已结算日（T-2），标注"已结算"；
-    回填/重跑走默认"当日费用"，措辞不随环比基准是否存在而变。
+    金额行不再标注"已结算"：CE 在 T+2 之后仍可能补录（见文件头），头条 T-2 的
+    数字后续回看还会修正，"已结算"是误导。报告日期在标题行里，金额行也不自称
+    "昨日"：头条是 T-2，说"昨日"与实际日期差一天。
     """
     parsed = datetime.strptime(report_date, '%Y-%m-%d')
     date_label = f"{parsed.month} 月 {parsed.day} 日"
-    # 报告日期就在标题行里，金额行不再自称"昨日"：头条用的是已结算日（T-2），
-    # 说"昨日"与实际日期差一天。
+    # 报告日期就在标题行里，金额行不再自称"昨日"（头条是 T-2，差一天）。
     if current.get('ce_error'):
         cost_line = f"{cost_label}：获取失败"
     else:
@@ -752,21 +791,42 @@ def handler(event, context):
         logger.info(result['msg'])
         return {'statusCode': 200, 'date': start_date, 'total_actual': result['total_actual'], 'reconcile_diff_pct': result['reconcile_diff_pct']}
 
-    # 默认每日运行：T-2 最终值 + T-1 暂估值仍完整写库，但手机只收到五行摘要。
+    # 默认每日运行：一次 CE 请求拉取 T-7 ~ 今天整段（CE 按分页请求计费，与天数无关）。
+    #   T-2：日报头条；T-1：暂估（账单可能未结算完）；T-3 ~ T-7：静默回看。
+    # 三者都完整写库，手机只收到五行摘要。
+    # 回看的原因见文件头："T+2 一定结算完"不成立，CE 之后仍会补录，不重算就永久丢失。
+    def _day(offset):
+        return (now - timedelta(days=offset)).strftime('%Y-%m-%d')
+
+    today = _day(0)
+    try:
+        ce_by_day = get_cost_explorer_data_by_day(_day(LOOKBACK_DAYS), today)
+        ce_error = None
+    except Exception as e:
+        logger.error(f"Cost Explorer query failed for {_day(LOOKBACK_DAYS)}..{today}: {e}")
+        ce_by_day, ce_error = {}, str(e)
+
+    def _run(start_date, end_date):
+        if ce_error:
+            return {'ce_error': ce_error}
+        # CE 的 DAILY 结果对无用量的日期也返回空 Groups；缺 key 只会出现在窗口
+        # 跨越账单月初等边界情况，按无用量处理与旧的单日查询行为一致。
+        return reconcile_one(start_date, end_date, now, ce_results=ce_by_day.get(start_date, []))
+
     jobs = [
-        ('T-2 (已结算)', (now - timedelta(days=2)).strftime('%Y-%m-%d'), (now - timedelta(days=1)).strftime('%Y-%m-%d')),
-        ('T-1 (临时·账单可能未结算完)', (now - timedelta(days=1)).strftime('%Y-%m-%d'), now.strftime('%Y-%m-%d')),
+        ('T-2 (日报头条)', _day(2), _day(1)),
+        ('T-1 (临时·账单可能未结算完)', _day(1), today),
     ]
 
     header = f"[Bedrock 日报] 账号 {get_account_id()}\n"
     detail_report = header
-    sections = []  # 按 job 顺序保存每段正文，供 AI 只取已结算段
+    sections = []  # 按 job 顺序保存每段正文，供 AI 只取头条段
     dates = []
     results = []
     for label, start_date, end_date in jobs:
         dates.append(start_date)
         section = f"\n========== {label}  {start_date} ==========\n"
-        result = reconcile_one(start_date, end_date, now)
+        result = _run(start_date, end_date)
         results.append(result)
         if result.get('ce_error'):
             section += f"  ⚠ Cost Explorer 查询失败: {result['ce_error']}\n"
@@ -775,30 +835,51 @@ def handler(event, context):
         sections.append(section)
         detail_report += section
 
-    # 手机头条只用已结算日（T-2）。CE 的 DAILY 数据 T+1 才完整，而本 Lambda 在
-    # UTC 01:00 跑，此时 T-1 刚结束一小时，CE 普遍还返回 0 或残值。拿 T-1 当头条
-    # 就会推出"当日费用 $0.00（较前日 ↓100%）"+"对账状态：无用量"这种假结论，
+    # 回看 T-3 ~ T-LOOKBACK_DAYS：只重算写库，不进日报正文。
+    # 有变化的日期 reconcile_one 已记 "对账更新" 日志，这里只汇总一行便于检索。
+    lookback_results = {}
+    lookback_changes = []
+    for offset in range(3, LOOKBACK_DAYS + 1):
+        start_date = _day(offset)
+        result = _run(start_date, _day(offset - 1))
+        lookback_results[start_date] = result
+        if result.get('ce_error'):
+            continue
+        prev = result.get('previous_total')
+        if prev is not None and abs(result['total_actual'] - prev) >= 0.01:
+            lookback_changes.append(f"{start_date}: ${prev:.2f} → ${result['total_actual']:.2f}")
+    if lookback_changes:
+        logger.info("回看发现账单补录: " + '; '.join(lookback_changes))
+
+    # 手机头条用 T-2。CE 的 DAILY 数据 T+1 才大体完整，而本 Lambda 在 UTC 01:00 跑，
+    # 此时 T-1 刚结束一小时，CE 普遍还返回 0 或残值。拿 T-1 当头条就会推出
+    # "当日费用 $0.00（较前日 ↓100%）"+"对账状态：无用量"这种假结论，
     # 并把 AI 的趋势判断一起带偏。
     # T-1 仍照常对账写库（Web 控制台可看暂估值，次日作为 T-2 重算覆盖），只是不上头条。
-    settled_date, settled_result = dates[0], results[0]
-    # AI 只看已结算段。T-1 段的 $0 会被读成"费用骤降"，把整段结论带偏；
+    headline_date, headline_result = dates[0], results[0]
+    # AI 只看头条段。T-1 段的 $0 会被读成"费用骤降"，把整段结论带偏；
     # detail_report 仍保留双段，只给 logger 用于排查。
     ai_report = f"{header}{sections[0]}"
 
+    # 月汇总用本轮全部结果（头条 + 回看）覆盖 DDB 读到的旧值：回看刚改写的日期
+    # 可能因最终一致读到旧值，直接覆盖才能保证手机上的"本月累计"与库里收敛后一致。
     month_summary = _get_month_summary(
-        settled_date,
-        {settled_date: settled_result},
+        headline_date,
+        {headline_date: headline_result, **lookback_results},
         exclude={dates[-1]},
     )
-    # 环比基准取 T-3（头条 T-2 的前一天），从 DDB 读历史已结算值。
-    # 读不到时传 ce_error 哨兵，让摘要输出"（前日数据不可用）"而不是编一个百分比。
-    prev_date = (now - timedelta(days=3)).strftime('%Y-%m-%d')
+    # 环比基准取 T-3（头条 T-2 的前一天）。本轮回看刚重算过它，直接用新值；
+    # 回看失败时退回读 DDB。读不到时传 ce_error 哨兵，让摘要输出"（前日数据不可用）"
+    # 而不是编一个百分比。
+    prev_date = _day(3)
+    previous = lookback_results.get(prev_date)
+    if not previous or previous.get('ce_error'):
+        previous = _load_previous_result(prev_date) or {'ce_error': 'no_record'}
     mobile_summary = _build_mobile_summary(
-        settled_date,
-        settled_result,
-        previous=_load_previous_result(prev_date) or {'ce_error': 'no_record'},
+        headline_date,
+        headline_result,
+        previous=previous,
         month_summary=month_summary,
-        cost_label='费用（已结算）',
     )
 
     # 推送策略判断（先判断是否推送，避免不推送时仍调用 AI 产生模型费用）
@@ -818,7 +899,7 @@ def handler(event, context):
     if should_notify and webhooks:
         ai_config = get_ai_summary_config()
         if ai_config['enabled']:
-            ai_summary = _get_ai_summary(ai_report, settled_date, ai_config, month_summary)
+            ai_summary = _get_ai_summary(ai_report, headline_date, ai_config, month_summary)
             if ai_summary:
                 mobile_summary += f"\n💡 {ai_summary}"
             else:
@@ -829,4 +910,9 @@ def handler(event, context):
 
     logger.info(detail_report)
     logger.info(f"Mobile summary:\n{mobile_summary}")
-    return {'statusCode': 200, 'dates': dates}
+    return {
+        'statusCode': 200,
+        'dates': dates,
+        'lookback_dates': sorted(lookback_results),
+        'lookback_changes': lookback_changes,
+    }

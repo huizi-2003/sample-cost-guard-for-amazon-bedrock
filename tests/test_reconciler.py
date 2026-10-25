@@ -405,7 +405,7 @@ def test_valid_historical_date_sets_correct_dates(
 @patch('reconciler.handler.send_webhook_all')
 @patch('reconciler.handler.save_reconcile_record')
 @patch('reconciler.handler.get_cloudwatch_token_total', return_value=(0, [], {}))
-@patch('reconciler.handler.get_cost_explorer_data', return_value=[])
+@patch('reconciler.handler.get_cost_explorer_data_by_day', return_value={})
 @patch('reconciler.handler.get_webhook_config', return_value=[])
 @patch('reconciler.handler.get_ai_summary_config', return_value={'enabled': False, 'model_id': 'us.amazon.nova-2-lite-v1:0'})
 def test_missing_date_falls_back_to_t_minus_2(
