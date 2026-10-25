@@ -522,6 +522,9 @@ Resources:
                 Action:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
+                  # 自动更新开关走 save_auto_upgrade_config，它用 UpdateItem
+                  # 局部写字段，避免与 Updater 并发写时互相覆盖 current_upgrade_id。
+                  - dynamodb:UpdateItem
                   - dynamodb:Query
                   - dynamodb:Scan
                   - dynamodb:DeleteItem

@@ -1486,7 +1486,9 @@ async function setAutoUpgrade(enabled) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: enabled }),
     });
-    const data = await resp.json();
+    // 后端未捕获异常时返回纯文本 "Internal Server Error"，直接 resp.json()
+    // 会抛出看不懂的 JSON 解析错误，掩盖真正的 HTTP 状态。
+    const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
     label.textContent = enabled ? '已开启' : '已关闭';
     msg.style.color = '#2d8659';
