@@ -48,6 +48,19 @@ class TestMatchPricing:
         assert match_pricing('openai.gpt-6-astra') == PRICING['gpt-6-astra']
         assert match_pricing('global.openai.gpt-6-astra') == PRICING['gpt-6-astra']
 
+    def test_kimi_k3_matches_all_inference_profiles(self):
+        # Kimi K3：in-region、US/IN Geo CRIS、Global CRIS 三种 model id 形态都要命中
+        assert match_pricing('moonshotai.kimi-k3') == PRICING['kimi-k3']
+        assert match_pricing('us.moonshotai.kimi-k3') == PRICING['kimi-k3']
+        assert match_pricing('global.moonshotai.kimi-k3') == PRICING['kimi-k3']
+
+    def test_kimi_k3_cost_and_no_longer_unpriced(self):
+        # 1M input + 1M output = $3 + $15；此前匹配不到价格，会落进 unpriced
+        tokens = {'input': 1_000_000, 'output': 1_000_000, 'cache_read': 0, 'cache_write': 0}
+        cost, unpriced = estimate_cost({'global.moonshotai.kimi-k3': tokens})
+        assert abs(cost - 18.0) < 1e-9
+        assert unpriced == set()
+
     def test_unknown_returns_none(self):
         # 未收录的 mantle 模型仍返回 None（费用按 0，计入 unpriced 提示）
         assert match_pricing('openai.gpt-6') is None

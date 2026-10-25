@@ -1072,6 +1072,10 @@ function shortenModelName(name) {
   name = name.replace('claude4sonnet', 'Sonnet 4');
   name = name.replace('claude4.5haiku', 'Haiku 4.5');
   name = name.replace('claude4.5sonnet', 'Sonnet 4.5');
+  // Kimi K3：mantle 形态已由账单条目证实（USE1-moonshotai.kimi-k3-mantle-*-global-standard）
+  name = name.replace('moonshotai.kimi-k3-mantle-global', 'Kimi K3 (mantle-global)');
+  name = name.replace('moonshotai.kimi-k3-mantle', 'Kimi K3 (mantle)');
+  name = name.replace('moonshotai.kimi-k3', 'Kimi K3');
   return name;
 }
 

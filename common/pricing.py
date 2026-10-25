@@ -57,6 +57,15 @@ PRICING = {
     # Geo CRIS 为 ×1.1，按本表惯例忽略。>272K 长上下文档位（20/25/2/75）CW 指标
     # 区分不出，统一按短上下文估算，长上下文请求会被低估。
     'gpt-6-astra': {'input': 10.0, 'output': 50.0, 'cache_read': 1.0, 'cache_write': 12.5},
+    # Moonshot Kimi K3（2026-09-18 上线）同时支持 bedrock-runtime 与 bedrock-mantle。
+    # 取 Global CRIS 价（US / IN CRIS 为 ×1.1，按本表惯例忽略），来自 Bedrock 模型卡片；
+    # input/output 已从本账户 Cost Explorer 的
+    # USE1-moonshotai.kimi-k3-mantle-*-tokens-global-standard 条目反算核对（恰为 3 / 15）。
+    # cache 两项账单尚无条目，取挂牌价；该模型只有 30m cache-write 一档。
+    # 1M 上下文内统一价，无长上下文分档。CloudWatch 只发布 Input/OutputTokenCount，
+    # 实际只用到 input/output 两项。将来若上线 kimi-k3-1 等型号，必须排在本条之前，
+    # 否则会被 'kimi-k3' 短 key 抢先命中。
+    'kimi-k3': {'input': 3.0, 'output': 15.0, 'cache_read': 0.30, 'cache_write': 3.75},
 }
 
 
