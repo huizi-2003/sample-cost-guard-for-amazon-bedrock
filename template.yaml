@@ -785,6 +785,14 @@ Resources:
       RestApiId: !Ref WebApi
       DeploymentId: !GetAtt WebApiDeployment.DeploymentId
       StageName: prod
+      # Stage 级限流：超限请求由 API Gateway 直接返回 429，不触发 Lambda 及下游
+      # 计费调用（CE / CloudWatch / IAM）。单人控制台 + 5 分钟轮询远低于此值。
+      # 两个 Method 都是 ANY 通配，无法在此按接口细分，接口级冷却见 web/app.py。
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingRateLimit: 20
+          ThrottlingBurstLimit: 50
 
   WebApiFunctionPermission:
     Type: AWS::Lambda::Permission

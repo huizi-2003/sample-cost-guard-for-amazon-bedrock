@@ -363,8 +363,10 @@ class TestBackfill:
     """POST /api/backfill: triggers async reconciliation."""
 
     @pytest.mark.anyio
+    @patch('web.app.put_item')
+    @patch('web.app.get_item', return_value=None)
     @patch('web.app.boto3.client')
-    async def test_valid_backfill_triggers_lambdas(self, mock_client_factory, client):
+    async def test_valid_backfill_triggers_lambdas(self, mock_client_factory, mock_get, mock_put, client):
         mock_lambda = MagicMock()
         mock_lambda.invoke.return_value = {}
         mock_client_factory.return_value = mock_lambda
@@ -375,6 +377,45 @@ class TestBackfill:
         assert data['total'] == 3
         assert data['triggered'] == 3
         assert mock_lambda.invoke.call_count == 3
+        # 冷却标记已写入
+        mock_put.assert_called_once()
+        assert mock_put.call_args.args[:2] == ('CONFIG', 'backfill_last_run')
+
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    @patch('web.app.get_item')
+    @patch('web.app.boto3.client')
+    async def test_backfill_within_cooldown_returns_429(self, mock_client_factory, mock_get, mock_put, client):
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        mock_get.return_value = {'value': recent}
+
+        resp = await client.post('/api/backfill', json={'days': 3})
+        assert resp.status_code == 429
+        assert '冷却' in resp.json()['error']
+        mock_client_factory.assert_not_called()  # 没有触发任何 Reconciler
+        mock_put.assert_not_called()             # 没有刷新冷却时间
+
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    @patch('web.app.get_item')
+    @patch('web.app.boto3.client')
+    async def test_backfill_after_cooldown_allowed(self, mock_client_factory, mock_get, mock_put, client):
+        old = (datetime.now(timezone.utc) - timedelta(minutes=11)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        mock_get.return_value = {'value': old}
+        mock_client_factory.return_value = MagicMock()
+
+        resp = await client.post('/api/backfill', json={'days': 1})
+        assert resp.status_code == 200
+
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    @patch('web.app.get_item', return_value={'value': 'not-a-timestamp'})
+    @patch('web.app.boto3.client')
+    async def test_backfill_dirty_marker_treated_as_absent(self, mock_client_factory, mock_get, mock_put, client):
+        mock_client_factory.return_value = MagicMock()
+
+        resp = await client.post('/api/backfill', json={'days': 1})
+        assert resp.status_code == 200
 
     @pytest.mark.anyio
     async def test_backfill_negative_days_returns_400(self, client):
@@ -385,3 +426,61 @@ class TestBackfill:
     async def test_backfill_non_integer_returns_400(self, client):
         resp = await client.post('/api/backfill', json={'days': 'abc'})
         assert resp.status_code == 400  # Handler validates before FastAPI schema
+
+
+# === POST /api/iam-scan ===
+
+
+class TestIamScanTrigger:
+    """POST /api/iam-scan: rejects re-trigger while a scan is in progress."""
+
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    @patch('web.app.get_item')
+    @patch('web.app.boto3.client')
+    async def test_trigger_while_scanning_returns_409(self, mock_client_factory, mock_get, mock_put, client):
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        mock_get.return_value = {'status': 'scanning', 'scan_time': recent}
+
+        resp = await client.post('/api/iam-scan')
+        assert resp.status_code == 409
+        data = resp.json()
+        assert data['status'] == 'scanning'   # 前端据此进入轮询而非报错
+        assert data['scan_time'] == recent
+        mock_put.assert_not_called()           # 没有覆盖 _meta
+        mock_client_factory.assert_not_called()
+
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    @patch('web.app.get_item')
+    @patch('web.app.boto3.client')
+    async def test_stale_scanning_marker_allows_retrigger(self, mock_client_factory, mock_get, mock_put, client):
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        mock_get.return_value = {'status': 'scanning', 'scan_time': stale}
+        mock_client_factory.return_value = MagicMock()
+
+        resp = await client.post('/api/iam-scan')
+        assert resp.status_code == 200
+        assert resp.json()['status'] == 'scanning'
+        mock_client_factory.return_value.invoke.assert_called_once()
+
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    @patch('web.app.get_item')
+    @patch('web.app.boto3.client')
+    async def test_done_status_allows_trigger(self, mock_client_factory, mock_get, mock_put, client):
+        mock_get.return_value = {'status': 'done', 'scan_time': '2026-01-01T00:00:00Z'}
+        mock_client_factory.return_value = MagicMock()
+
+        resp = await client.post('/api/iam-scan')
+        assert resp.status_code == 200
+
+    @pytest.mark.anyio
+    @patch('web.app.put_item')
+    @patch('web.app.get_item', return_value=None)
+    @patch('web.app.boto3.client')
+    async def test_no_meta_allows_trigger(self, mock_client_factory, mock_get, mock_put, client):
+        mock_client_factory.return_value = MagicMock()
+
+        resp = await client.post('/api/iam-scan')
+        assert resp.status_code == 200

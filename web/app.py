@@ -42,6 +42,20 @@ CW_TIMEOUT = BotoConfig(connect_timeout=10, read_timeout=30, retries={'max_attem
 
 RECONCILER_FUNCTION_NAME = os.environ.get('RECONCILER_FUNCTION_NAME', 'bedrock-cost-guard-reconciler')
 
+# 回填每次触发 days 个 Reconciler，每个至少一次计费的 Cost Explorer 调用，10 分钟内只允许触发一次
+BACKFILL_COOLDOWN = timedelta(minutes=10)
+# IAM 扫描 _meta 停留在 scanning 超过此时长视为上次扫描已崩溃，允许重新触发（Web Lambda 超时 180s）
+IAM_SCAN_STALE_AFTER = timedelta(minutes=10)
+_TS_FMT = '%Y-%m-%dT%H:%M:%SZ'
+
+
+def _parse_ts(value):
+    """解析 DDB 里存的 UTC 时间戳字符串，脏值返回 None。"""
+    try:
+        return datetime.strptime(value or '', _TS_FMT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
 app = FastAPI()
 
 # Static files
@@ -789,7 +803,19 @@ async def trigger_iam_scan():
     API Gateway 硬限制 29s，大型账号可能有几百个 IAM 身份，扫描耗时 30s+。
     方案：POST 立即返回 → 异步 invoke 自身 Lambda 执行扫描 → 前端轮询 GET 接口。
     """
-    scan_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    scan_time = datetime.now(timezone.utc).strftime(_TS_FMT)
+
+    # 已有扫描在进行中则拒绝：避免重复的全账号 IAM 枚举，也避免两个并发扫描
+    # 在 iam_scanner 的"先删旧行再写新行"阶段互删结果。超时视为上次崩溃，放行。
+    meta = get_item('IAM_SCAN', '_meta')
+    if meta and meta.get('status') == 'scanning':
+        started = _parse_ts(meta.get('scan_time'))
+        if started and datetime.now(timezone.utc) - started < IAM_SCAN_STALE_AFTER:
+            return JSONResponse(status_code=409, content={
+                'error': '扫描正在进行中，请稍后刷新查看结果',
+                'status': 'scanning',
+                'scan_time': meta['scan_time'],
+            })
 
     # 立即标记"扫描中"
     put_item('IAM_SCAN', '_meta',
@@ -865,8 +891,20 @@ async def backfill(request: Request):
     if not isinstance(days, int) or days < 1 or days > 30:
         return JSONResponse({'error': 'days must be between 1 and 30'}, status_code=400)
 
-    lambda_client = boto3.client('lambda')
+    # 冷却：非原子的读后写，防手快连点和轮询叠加，不防刻意并发
     now = datetime.now(timezone.utc)
+    last = get_item('CONFIG', 'backfill_last_run')
+    last_at = _parse_ts(last.get('value')) if last else None
+    if last_at:
+        remaining = BACKFILL_COOLDOWN - (now - last_at)
+        if remaining.total_seconds() > 0:
+            minutes = int(remaining.total_seconds() // 60) + 1
+            return JSONResponse(status_code=429, content={
+                'error': f'回填冷却中，请 {minutes} 分钟后再试',
+            })
+    put_item('CONFIG', 'backfill_last_run', value=now.strftime(_TS_FMT))
+
+    lambda_client = boto3.client('lambda')
     triggered = []
 
     for i in range(days):
@@ -879,7 +917,8 @@ async def backfill(request: Request):
             )
             triggered.append(target_date)
         except Exception as e:
-            pass  # async fire-and-forget
+            # 异步 fire-and-forget，但触发失败要留痕，否则 triggered < total 无从排查
+            logger.error(f'回填 {target_date} 触发失败: {e}')
 
     return {
         'total': days,
