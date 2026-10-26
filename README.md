@@ -25,7 +25,7 @@ AWS Bedrock 用量管控工具集：用量监控、每日对账、Web 管理界�
 
 AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explorer 看到。如果 Bedrock 被滥用（Key 泄露、内部无节制调用等），等你发现时可能已经产生了大量费用。
 
-**本项目的核心价值：准实时监控 + 即时告警**，每 5 分钟从 CloudWatch 聚合全账号所有 Region 的 Bedrock Token 用量，超阈值立即推送告警，不用等第二天的账单。
+**本项目的核心价值：准实时监控 + 即时告警**，每 5 分钟从 CloudWatch 聚合全账号在已配置监控 Region 内的 Bedrock Token 用量，超阈值立即推送告警，不用等第二天的账单。
 
 ### 与 LiteLLM 等代理网关的关系
 
@@ -33,7 +33,7 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 
 | | Bedrock Cost Guard | LiteLLM / Gateway 类 |
 |---|---|---|
-| 监控粒度 | **整个 AWS 账号**，全 Region、全模型 | 仅经过网关的流量 |
+| 监控粒度 | **整个 AWS 账号**，全模型；实时监控覆盖已配置的 Region（默认 10 个），每日对账覆盖账单中出现的全部 Region | 仅经过网关的流量 |
 | 部署方式 | Serverless（Lambda + EventBridge），无需代理层 | 需要部署代理服务 |
 | 数据来源 | CloudWatch 指标 + Cost Explorer 账单 | 自身请求日志 |
 | 适用场景 | 账号级别的费用兜底、异常发现、每日对账 | 请求级别的 quota 控制、路由、负载均衡 |
@@ -47,11 +47,11 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 
 ### 1. Monitor — 用量监控
 
-- 每 5 分钟跨所有 Region 聚合 Bedrock token 用量
+- 每 5 分钟跨已配置的监控 Region（见下方"监控 Region"）聚合 Bedrock token 用量，未配置的 Region 不在实时监控范围内
 - 覆盖 AWS/Bedrock + AWS/BedrockMantle 双 namespace，所有模型、所有 token 类型（含 cache）
 - **CW 查询方式**（与 reconciler 不同）：直接 SEARCH per-model 指标并返回原始数据点（`ReturnData=True`, Period=300），代码侧按时间戳切分 5min/15min/daily 窗口，同时获得每模型每类型明细；BedrockMantle 使用 `SEARCH('{AWS/BedrockMantle,Model} Tokens', 'Sum', 300)` 聚合 metric
 - **总开关**：DDB `CONFIG#monitor_enabled`，设为 `false` 时跳过全部监控逻辑（省 CloudWatch 费用），默认开启。通过 Web Console 配置管理页面切换
-- 监控 Region：首次运行自动写入一组默认区域（us-east-1/us-east-2/us-west-1/us-west-2/eu-central-1/eu-west-1/eu-west-3/ap-northeast-1/ap-southeast-1/ap-southeast-2），可通过 Web Console 修改
+- 监控 Region：首次运行自动写入一组默认区域（us-east-1/us-east-2/us-west-1/us-west-2/eu-central-1/eu-west-1/eu-west-3/ap-northeast-1/ap-southeast-1/ap-southeast-2），存于 DDB `CONFIG#regions`。Web Console 配置页只做只读展示，如需调整可调用 `PUT /api/config/regions`（body `{"regions": ["us-east-1", ...]}`）或直接改 DDB
 - **Delta 增量告警**（5min / 15min / daily 三层阈值，单位为美元 $）：
   - 5min/15min 窗口：比较当前 daily 累计与基线记录的**增量**（delta = 当前累计 - 基线累计），增量超阈值才告警，避免累计值持续触发
   - daily 窗口：直接比较当日累计总量
@@ -173,7 +173,8 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
   reconcile_diff_pct = (CE_total - CW_total) / CW_total × 100
 
   仅在 CE_total > 0、CW_total > 0 且没有任何 Region 查询失败时才计算；
-  否则留空（_summary 里不写该字段），推送里显示"无法计算"。
+  否则留空（_summary 里不写该字段），推送的对账状态显示"待核对"（当日无费用时显示"无用量"）；
+  "无法计算"及具体原因只出现在 CloudWatch Logs 的详细报告里。
 
   预期结果：diff ≈ 0%
   实测：2026-06-23 CE=32,873,693, CW=32,873,693, diff=0.00%
@@ -224,13 +225,13 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
   - **累计费用趋势线**（按 5 分钟粒度，滚动 24h，实时更新）
   - 每小时用量图表（模型维度堆叠，增量展示）
   - 每 5 分钟自动刷新
-- **配置管理**：监控总开关 + 三层告警阈值、通知渠道（Webhook）、日报推送策略、AI 账单总结、监控 Region 列表
+- **配置管理**：监控总开关 + 三层告警阈值、通知渠道（Webhook）、日报推送策略、AI 账单总结、监控 Region 列表（只读展示）
 - **版本管理**：
   - **自动更新**（默认开启）：每周自动检查 GitHub Release 并整栈升级，用户无需操作
   - 更新记录时间线：每次检查/更新的时间、结果、更新内容（来自 Release notes），可展开查看
   - 页面开关可随时关闭自动更新，也可点「立即更新」手动触发
   - 版本号显示 Release tag（如 `v26.09.28.1`），构建时由 CodeFetcher 固化进 `common/build_info.py`，无需手动维护
-  - 堆栈名称、最后更新时间、IP 白名单（读取 CloudFormation 栈参数）
+  - 最后更新时间、IP 白名单（读取 CloudFormation 栈信息与参数）
   - 检查结果缓存 1 小时（DynamoDB），GitHub 不可达时回退过期缓存
   - 详见 [自动更新](#自动更新)
 - **⚠️ 安全提示**：本示例未实现用户认证，仅依赖 API Gateway Resource Policy 的 IP 白名单控制访问。如用于生产环境，请自行添加认证机制（如 Cognito、IAM Auth 等），避免管理界面暴露在公网
@@ -256,7 +257,7 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 | `never` | 不推送日报（对账数据照常写入 DynamoDB） |
 
 - 工作日判断数据来源：[NateScarlet/holiday-cn](https://github.com/NateScarlet/holiday-cn)（自动跟踪国务院公告）
-- **用量告警不受此策略影响，始终实时推送，不可关闭**（`never` 也只关日报，不关告警）
+- **用量告警不受此策略影响**（`never` 也只关日报，不关告警）；告警只会随监控总开关（`CONFIG#monitor_enabled`）一并关闭
 - 策略仅控制 reconciler 日报推送；对账数据无论是否推送都会正常写入 DynamoDB
 - **AI 账单总结**（可选，默认关闭）：日报推送时可在末尾附加一行 AI 生成的中文结论（以 `💡 ` 开头，详见 [功能 6](#6-ai-账单总结--每日报告-ai-洞察可选)）。它只在"确定推送日报且已配置 Webhook"后才调用——`workday`/`never` 当天不推送时不会调用，也不产生模型费用
 
@@ -352,8 +353,8 @@ CloudWatch 成本 ≈ 轮询频率 × Region 数 × 各 Region 活跃模型数 �
 实测中 us-east-1 与 us-west-2 因模型最多，占了 GetMetricData 的大头（其余 8 个 Region 每个仅几百条/天）。
 
 **如需进一步压缩成本：**
-- **减少监控 Region**（Web Console 配置）：只保留实际调用 Bedrock 的区域，成本近似线性下降
-- **拉长监控间隔**：默认 5 分钟，改成 10 分钟即可让 GetMetricData 成本减半（调整 EventBridge 规则的 `rate`）
+- **减少监控 Region**：只保留实际调用 Bedrock 的区域，成本近似线性下降。Region 列表存于 DDB `CONFIG#regions`，通过 `PUT /api/config/regions` 或直接改 DDB 调整（Web Console 配置页只做只读展示）
+- **不要只改 EventBridge 的 `rate` 来拉长间隔**：monitor 的 5 分钟窗口是写死在代码里的（`start_5min = bucket_end - 300`，每轮只把最近一个 5 分钟桶的模型明细落库；5min 基线要求在 10 分钟内）。单独把 `rate` 改成 10 分钟会导致一半的桶永远不被记录，实时监控图和 24h 预估费用少一半，且 5min 基线经常取不到使告警失效。拉长间隔需同步修改 `monitor/handler.py` 的窗口常量
 - 对以 Bedrock 为主要支出的账号而言，这点管控开销通常只占被监控支出的极小比例，属于"费用兜底保险"的合理成本
 
 > 注：具体金额随账号的 Region 数、模型数量浮动，请以自己账单为准。上表为 2026-07 实测用量下的代表值。
@@ -414,7 +415,8 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
 打开管理界面后，在「配置管理」页设置：
 - **Webhook URL**：填你的飞书/钉钉/企微机器人地址（用于接收告警）
 - **渠道类型**：选 feishu / dingtalk / wecom
-- 阈值和监控区域有默认值，可按需调整
+- **告警阈值（必填）**：5min / 15min / daily 三层阈值**没有默认值**。未配置时 monitor 不做阈值比较，只会每天推送一次"尚未配置费用告警阈值，费用红线未生效"的提醒
+- 监控区域有默认值（见 [Monitor](#1-monitor--用量监控)），一般无需调整
 
 部署后系统会自动：
 - 每 5 分钟监控 Bedrock 用量（超阈值推送告警）
@@ -478,7 +480,7 @@ Updater Lambda 检查最新 Release
 | 只跟随 Release | 误 push、半成品、未经发版的代码到不了用户手上 |
 | 锁定 commit SHA | 不使用 `refs/heads/main.zip` 这类会移动的引用，部署内容可复现 |
 | 方向判定 | 用 GitHub compare API 确认是 `ahead`；`behind` / `diverged` 一律拒绝，避免降级或跨分叉部署 |
-| 独立 CloudFormation service role | 整栈写权限收在 `StackUpdateRole`（仅 `cloudformation.amazonaws.com` 可扮演）。Updater 自己**没有**任何 IAM / Lambda / DynamoDB 写权限，只能"请求 CloudFormation 去改" |
+| 独立 CloudFormation service role | 整栈写权限收在 `StackUpdateRole`（仅 `cloudformation.amazonaws.com` 可扮演）。Updater 自己**没有**任何资源变更权限（无 `iam:Create*/Put*`、`lambda:Update*/Create*`、`dynamodb:CreateTable` 等），只能"请求 CloudFormation 去改"；它仅持有运行自身所需的最小权限：本栈 Change Set 操作与栈状态查询（`DescribeStacks/DescribeStackEvents`）、`cloudformation:ValidateTemplate`（不支持资源级授权）、`iam:PassRole` StackUpdateRole、DDB 配置表读写（记录升级状态/历史）、S3 `templates/*` 前缀读写（暂存模板）、`lambda:InvokeFunction` Web/Updater（健康检查与自调用续跑）、CloudWatch Logs 写入 |
 | 有状态资源保护 | Change Set 若要删除或替换 DynamoDB 表、S3 桶，拒绝自动执行并告警 |
 | 双层回滚 | CloudFormation 负责基础设施级失败回滚；健康检查负责"部署成功但代码是坏的"这种 CFn 抓不到的情况 |
 | Web Lambda 零特权 | 「立即更新」只是一次 `lambda:InvokeFunction`，对外提供 HTTP 服务的 Lambda 不持有升级权限 |
@@ -588,13 +590,13 @@ bedrock-cost-guard/
 ├── agent/                 # AI 账单总结 Agent（部署到 AgentCore Runtime）
 │   ├── main.py            # Strands Agent 入口（接收对账数据，生成一句话结论）
 │   ├── requirements.txt   # Agent 依赖（部署时由 CodeFetcher 预装进 agent.zip）
-│   └── pyproject.toml     # 项目元数据（不参与部署构建）
+│   └── pyproject.toml     # 项目元数据（不参与依赖安装，但会打进 agent.zip 并计入 agent 指纹，改动会触发 AgentCore 重建）
 ├── web/
 │   ├── app.py             # FastAPI 后端
 │   ├── requirements.txt
 │   └── static/
 │       ├── index.html     # 管理页面（费用总览 + 历史对账 + 实时监控 + 配置管理 + 权限扫描 + 版本管理）
-│       └── chart.min.js   # Chart.js 图表库
+│       └── chart.min.js   # Chart.js 本地副本（当前未使用，页面从 CDN 加载 chart.js@4.4.1）
 ├── tests/                 # 单元测试
 │   ├── __init__.py
 │   ├── conftest.py
