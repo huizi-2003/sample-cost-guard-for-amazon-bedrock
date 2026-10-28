@@ -161,9 +161,8 @@ tr:hover { background: #faf7f4; }
   <div style="font-size:12px; color:#999; margin-bottom:8px;">滚动 24 小时窗口 · 时间为北京时间 (UTC+8) · 每 5 分钟采集</div>
   <!-- 预估费用卡片 -->
   <div id="cost-cards" class="summary" style="display:none;">
-    <div class="summary-card"><div class="value" id="cost-total">-</div><div class="label">24h 预估费用</div></div>
-    <div class="summary-card"><div class="value" id="cost-top-model">-</div><div class="label">费用最高的模型<span class="sub" id="cost-top-model-name"></span></div></div>
-    <div class="summary-card"><div class="value" id="cost-tokens">-</div><div class="label">累计 Token</div></div>
+    <div class="summary-card"><div class="value" id="cost-total">-</div><div class="label">24h 预估费用<span class="sub" id="cost-top-model-share"></span></div></div>
+    <div class="summary-card"><div class="value" id="cost-tokens">-</div><div class="label">24h Token 合计</div></div>
   </div>
   <div id="cost-note" style="display:none; font-size:12px; color:#999; margin:-12px 0 12px;">* 估算值，cache write 按 5min 价格计算；in-region 调用实际费用约高 10%</div>
   <!-- 按模型费用明细（数据来自 /api/today-cost 的 models 字段，与上方卡片同源） -->
@@ -183,9 +182,6 @@ tr:hover { background: #faf7f4; }
   <!-- 累计费用趋势线 -->
   <div id="cost-trend-container" style="display:none; position:relative; height:200px; margin-bottom:20px;">
     <canvas id="cost-trend-chart"></canvas>
-  </div>
-  <div id="monitor-chart-container" style="display:none; position:relative; height:420px;">
-    <canvas id="monitor-chart"></canvas>
   </div>
   <div id="monitor-error" style="display:none; text-align:center; color:#d32f2f;"></div>
 </div>
@@ -402,7 +398,6 @@ const COLORS = [
 
 // ===== Tabs =====
 let monitorRefreshTimer = null;
-let monitorChart = null;
 let costTrendChart = null;
 let overviewTrendChart = null;
 let overviewBarChart = null;
@@ -416,9 +411,8 @@ document.querySelectorAll('.tab').forEach(tab => {
 
     if (monitorRefreshTimer) { clearInterval(monitorRefreshTimer); monitorRefreshTimer = null; }
     if (tab.dataset.panel === 'monitor') {
-      loadMonitorChart();
       loadTodayCost();
-      monitorRefreshTimer = setInterval(() => { loadMonitorChart(); loadTodayCost(); }, 5 * 60 * 1000);
+      monitorRefreshTimer = setInterval(loadTodayCost, 5 * 60 * 1000);
     }
     if (tab.dataset.panel === 'iam-scan') {
       loadIamScan();
@@ -946,41 +940,45 @@ async function startBackfill() {
 
 // ===== Tab 3: 实时监控 =====
 async function loadTodayCost() {
+  const cardsEl = document.getElementById('cost-cards');
+  const trendEl = document.getElementById('cost-trend-container');
+  const noteEl = document.getElementById('cost-note');
+  const modelTableEl = document.getElementById('cost-model-container');
+  const emptyEl = document.getElementById('monitor-empty');
+  const errorEl = document.getElementById('monitor-error');
+
   try {
     const resp = await fetch(`${API}/api/today-cost`);
     const data = await resp.json();
-
-    const cardsEl = document.getElementById('cost-cards');
-    const trendEl = document.getElementById('cost-trend-container');
-    const noteEl = document.getElementById('cost-note');
-
-    const modelTableEl = document.getElementById('cost-model-container');
+    errorEl.style.display = 'none';
 
     if (data.total_cost === 0 && data.timeline.length === 0) {
       cardsEl.style.display = 'none';
       trendEl.style.display = 'none';
       noteEl.style.display = 'none';
       modelTableEl.style.display = 'none';
+      emptyEl.style.display = 'block';
       return;
     }
+    emptyEl.style.display = 'none';
 
     // 更新卡片
     cardsEl.style.display = 'flex';
     noteEl.style.display = 'block';
     document.getElementById('cost-total').textContent = '$' + data.total_cost.toFixed(2);
 
-    // Top 模型
+    // 第一张卡小字：费用最高模型的占比
     const modelEntries = Object.entries(data.models);
-    if (modelEntries.length > 0) {
+    const shareEl = document.getElementById('cost-top-model-share');
+    if (modelEntries.length > 0 && data.total_cost > 0) {
       const top = modelEntries.sort((a, b) => b[1].cost - a[1].cost)[0];
-      document.getElementById('cost-top-model').textContent = '$' + top[1].cost.toFixed(2);
-      document.getElementById('cost-top-model-name').textContent = shortenModelName(top[0]);
+      const pct = Math.round(top[1].cost / data.total_cost * 100);
+      shareEl.textContent = `${pct}% 来自 ${shortenModelName(top[0])}`;
     } else {
-      document.getElementById('cost-top-model').textContent = '-';
-      document.getElementById('cost-top-model-name').textContent = '';
+      shareEl.textContent = '';
     }
 
-    // 累计 Token（所有已定价模型）
+    // 24h Token 合计（所有已定价模型）
     document.getElementById('cost-tokens').textContent = (data.total_tokens || 0).toLocaleString();
 
     // 按模型费用明细表
@@ -995,7 +993,8 @@ async function loadTodayCost() {
       trendEl.style.display = 'none';
     }
   } catch (e) {
-    // 静默失败，不影响主图表
+    errorEl.style.display = 'block';
+    errorEl.textContent = '数据加载失败：' + e.message;
   }
 }
 
@@ -1046,18 +1045,36 @@ function renderCostModelTable(models, totalCost, unpricedModels) {
   }
 }
 
+// 后端 timeline.time 为 "MM/DD HH:MM"（UTC，无年份）。补年份转 epoch ms：
+// 按当前 UTC 年，若结果比现在晚超过 1 天则视为去年（处理 12/31 → 01/01 跨年）
+function timelineToTs(timeStr) {
+  const m = timeStr.match(/(\d{2})\/(\d{2}) (\d{2}):(\d{2})/);
+  if (!m) return NaN;
+  const now = Date.now();
+  let ts = Date.UTC(new Date().getUTCFullYear(), parseInt(m[1]) - 1, parseInt(m[2]), parseInt(m[3]), parseInt(m[4]));
+  if (ts > now + 86400000) ts = Date.UTC(new Date().getUTCFullYear() - 1, parseInt(m[1]) - 1, parseInt(m[2]), parseInt(m[3]), parseInt(m[4]));
+  return ts;
+}
+
+// epoch ms → 北京时间 "MM/DD HH:MM"
+function fmtBJ(ts) {
+  const d = new Date(ts + 8 * 3600 * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getUTCMonth() + 1)}/${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
 function renderCostTrend(timeline) {
   const canvas = document.getElementById('cost-trend-chart');
-  const labels = timeline.map(p => utcToBJ(p.time));
-  const values = timeline.map(p => p.cost);
+  const points = timeline
+    .map(p => ({ x: timelineToTs(p.time), y: p.cost }))
+    .filter(p => !isNaN(p.x));
 
   const cfg = {
     type: 'line',
     data: {
-      labels,
       datasets: [{
         label: '累计费用 ($)',
-        data: values,
+        data: points,
         borderColor: '#4361ee',
         backgroundColor: 'rgba(67, 97, 238, 0.1)',
         borderWidth: 2,
@@ -1069,13 +1086,20 @@ function renderCostTrend(timeline) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
         title: { display: true, text: '最近 24h 累计预估费用', font: { size: 14 }, color: '#1a1a2e' },
-        tooltip: { callbacks: { label: (item) => '$' + item.parsed.y.toFixed(4) } },
+        tooltip: {
+          callbacks: {
+            title: (items) => items.length ? fmtBJ(items[0].parsed.x) : '',
+            label: (item) => '$' + item.parsed.y.toFixed(4),
+          },
+        },
       },
       scales: {
-        x: { grid: { display: false }, ticks: { color: '#888', maxTicksLimit: 12 } },
+        // linear 数值轴（epoch ms）：横轴按真实时间间距排布，不依赖 date adapter
+        x: { type: 'linear', grid: { display: false }, ticks: { color: '#888', maxTicksLimit: 12, callback: (v) => fmtBJ(v) } },
         y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { color: '#888', callback: (v) => '$' + v.toFixed(2) } },
       },
     },
@@ -1083,33 +1107,6 @@ function renderCostTrend(timeline) {
 
   if (costTrendChart) { costTrendChart.destroy(); costTrendChart = null; }
   costTrendChart = new Chart(canvas, cfg);
-}
-
-async function loadMonitorChart() {
-  const today = new Date();
-  const utcDate = today.toISOString().slice(0, 10);
-
-  try {
-    const todayResp = await fetch(`${API}/api/monitor/last24h/models`);
-    const todayData = await todayResp.json();
-
-    const modelNames = Object.keys(todayData);
-    if (modelNames.length === 0) {
-      document.getElementById('monitor-empty').style.display = 'block';
-      document.getElementById('monitor-chart-container').style.display = 'none';
-      document.getElementById('monitor-error').style.display = 'none';
-      return;
-    }
-
-    document.getElementById('monitor-empty').style.display = 'none';
-    document.getElementById('monitor-chart-container').style.display = 'block';
-    document.getElementById('monitor-error').style.display = 'none';
-
-    renderModelChart(todayData);
-  } catch (e) {
-    document.getElementById('monitor-error').style.display = 'block';
-    document.getElementById('monitor-error').textContent = '数据加载失败：' + e.message;
-  }
 }
 
 function shortenModelName(name) {
@@ -1142,99 +1139,6 @@ function shortenModelName(name) {
   name = name.replace('moonshotai.kimi-k3-mantle', 'Kimi K3 (mantle)');
   name = name.replace('moonshotai.kimi-k3', 'Kimi K3');
   return name;
-}
-
-function renderModelChart(data) {
-  const canvas = document.getElementById('monitor-chart');
-
-  // Sort by total, take top 6, merge rest
-  const modelTotals = Object.entries(data).map(([model, series]) => {
-    const last = series.length > 0 ? series[series.length - 1].tokens : 0;
-    return { model, total: last, series };
-  }).sort((a, b) => b.total - a.total);
-
-  const topModels = modelTotals.slice(0, 6);
-  const otherModels = modelTotals.slice(6);
-
-  // Collect all time points
-  const allTimes = new Set();
-  modelTotals.forEach(m => m.series.forEach(p => allTimes.add(p.time)));
-  const sortedTimes = [...allTimes].sort();
-  const labels = sortedTimes.map(t => utcToBJ(t));
-
-  // Convert cumulative to deltas
-  function toDeltas(series) {
-    const timeMap = {};
-    series.forEach(p => { timeMap[p.time] = p.tokens; });
-    let prev = 0;
-    return sortedTimes.map(t => {
-      const cur = timeMap[t] !== undefined ? timeMap[t] : prev;
-      const delta = cur - prev;
-      prev = cur;
-      return delta > 0 ? delta : 0;
-    });
-  }
-
-  const datasets = topModels.map((m, i) => ({
-    label: shortenModelName(m.model),
-    data: toDeltas(m.series),
-    backgroundColor: COLORS[i % COLORS.length],
-    borderColor: COLORS[i % COLORS.length].replace('0.7', '1'),
-    borderWidth: 1,
-    fill: true,
-    pointRadius: 0,
-  }));
-
-  if (otherModels.length > 0) {
-    const otherDeltas = labels.map(() => 0);
-    otherModels.forEach(m => {
-      const deltas = toDeltas(m.series);
-      deltas.forEach((d, i) => { otherDeltas[i] += d; });
-    });
-    datasets.push({
-      label: '其他',
-      data: otherDeltas,
-      backgroundColor: 'rgba(180,180,180,0.5)',
-      borderColor: 'rgba(150,150,150,0.8)',
-      borderWidth: 1,
-      fill: true,
-      pointRadius: 0,
-    });
-  }
-
-  const cfg = {
-    type: 'line',
-    data: { labels, datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { display: true, position: 'bottom', labels: { boxWidth: 12, padding: 16 } },
-        title: { display: true, text: '当日 Token 消耗速率（每小时·按模型）', font: { size: 15 }, color: '#1a1a2e', padding: { bottom: 16 } },
-        tooltip: {
-          callbacks: {
-            label: (item) => item.dataset.label + ': ' + item.parsed.y.toLocaleString() + ' tokens',
-            footer: (items) => '合计: ' + items.filter(i => i.dataset.label !== '昨日总量').reduce((s, i) => s + i.parsed.y, 0).toLocaleString() + ' tokens',
-          },
-        },
-      },
-      scales: {
-        x: { grid: { display: false }, ticks: { color: '#888', maxTicksLimit: 12, autoSkip: true } },
-        y: { stacked: true, beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { color: '#888', callback: (v) => formatTokenCount(v) } },
-      },
-    },
-  };
-
-  if (monitorChart) { monitorChart.destroy(); monitorChart = null; }
-  monitorChart = new Chart(canvas, cfg);
-}
-
-function formatTokenCount(val) {
-  if (val >= 1e9) return (val / 1e9).toFixed(1) + 'B';
-  if (val >= 1e6) return (val / 1e6).toFixed(1) + 'M';
-  if (val >= 1e3) return (val / 1e3).toFixed(1) + 'K';
-  return Math.round(val).toString();
 }
 
 // ===== IAM Scan =====
