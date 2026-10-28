@@ -1047,6 +1047,14 @@ function fmtBJ(ts) {
   return `${p(d.getUTCMonth() + 1)}/${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
 }
 
+// 横轴刻度标签：整点只显示 "HH:00"，零点显示 "MM/DD" 作日期分隔
+function fmtTick(ts) {
+  const d = new Date(ts + 8 * 3600 * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  if (d.getUTCHours() === 0) return `${p(d.getUTCMonth() + 1)}/${p(d.getUTCDate())}`;
+  return `${p(d.getUTCHours())}:00`;
+}
+
 function renderCostTrend(timeline) {
   const canvas = document.getElementById('cost-trend-chart');
   const points = timeline
@@ -1082,8 +1090,10 @@ function renderCostTrend(timeline) {
         },
       },
       scales: {
-        // linear 数值轴（epoch ms）：横轴按真实时间间距排布，不依赖 date adapter
-        x: { type: 'linear', grid: { display: false }, ticks: { color: '#888', maxTicksLimit: 12, callback: (v) => fmtBJ(v) } },
+        // linear 数值轴（epoch ms）：横轴按真实时间间距排布，不依赖 date adapter。
+        // stepSize 1h 使刻度对齐到整点（epoch 整小时倍数 + 8h 偏移仍为整点），
+        // includeBounds 关掉以免数据首尾两个非整点也成为刻度；窗口窄时 autoSkip 自动隔一个跳一个
+        x: { type: 'linear', grid: { display: false }, ticks: { color: '#888', stepSize: 3600 * 1000, includeBounds: false, callback: (v) => fmtTick(v) } },
         y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { color: '#888', callback: (v) => '$' + v.toFixed(2) } },
       },
     },
