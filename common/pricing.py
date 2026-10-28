@@ -57,6 +57,15 @@ PRICING = {
     # Geo CRIS 为 ×1.1，按本表惯例忽略。>272K 长上下文档位（20/25/2/75）CW 指标
     # 区分不出，统一按短上下文估算，长上下文请求会被低估。
     'gpt-6-astra': {'input': 10.0, 'output': 50.0, 'cache_read': 1.0, 'cache_write': 12.5},
+    # GPT-6 Sol / Luna 与 GPT-6.1 Sol / Terra（bedrock-mantle 端点，CW 上报名如
+    # openai.gpt-6-luna）。取 Global CRIS 价（Mantle in-Region / US Geo CRIS 为 ×1.1，
+    # 按本表惯例忽略）。Mantle CW 指标不拆 cache，cache 命中 token 并入 input 按满价估。
+    # 注意与 GPT-5.6 系列是不同型号、不同价：5.6 Luna 0.2/1.2，6 Luna 0.1/0.5。
+    # 6 Sol 与 6.1 Sol 仅 cache_read 不同（0.20 vs 0.10），其余一致。
+    'gpt-6-sol':     {'input': 2.0,  'output': 10.0, 'cache_read': 0.20, 'cache_write': 2.5},
+    'gpt-6-luna':    {'input': 0.10, 'output': 0.50, 'cache_read': 0.01, 'cache_write': 0.125},
+    'gpt-6.1-sol':   {'input': 2.0,  'output': 10.0, 'cache_read': 0.10, 'cache_write': 2.5},
+    'gpt-6.1-terra': {'input': 1.0,  'output': 5.0,  'cache_read': 0.05, 'cache_write': 1.25},
     # Moonshot Kimi K3（2026-09-18 上线）同时支持 bedrock-runtime 与 bedrock-mantle。
     # 取 Global CRIS 价（US / IN CRIS 为 ×1.1，按本表惯例忽略），来自 Bedrock 模型卡片；
     # input/output 已从本账户 Cost Explorer 的

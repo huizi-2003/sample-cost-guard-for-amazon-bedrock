@@ -48,6 +48,25 @@ class TestMatchPricing:
         assert match_pricing('openai.gpt-6-astra') == PRICING['gpt-6-astra']
         assert match_pricing('global.openai.gpt-6-astra') == PRICING['gpt-6-astra']
 
+    def test_gpt6_and_gpt61_variants_do_not_cross_match_gpt56(self):
+        # GPT-6 Sol/Luna 与 GPT-6.1 Sol/Terra 是独立型号，价格与 5.6 系列不同，
+        # 且彼此不互为子串：openai.gpt-6-luna 决不能落到 gpt-5.6-luna 上（0.1 vs 0.2）
+        assert match_pricing('openai.gpt-6-luna') == PRICING['gpt-6-luna']
+        assert match_pricing('openai.gpt-6-sol') == PRICING['gpt-6-sol']
+        assert match_pricing('openai.gpt-6.1-sol') == PRICING['gpt-6.1-sol']
+        assert match_pricing('openai.gpt-6.1-terra') == PRICING['gpt-6.1-terra']
+        assert match_pricing('openai.gpt-5.6-luna') == PRICING['gpt-5.6-luna']
+        assert match_pricing('openai.gpt-5.6-sol') == PRICING['gpt-5.6-sol']
+        assert PRICING['gpt-6-luna'] != PRICING['gpt-5.6-luna']
+        assert PRICING['gpt-6-sol'] != PRICING['gpt-6.1-sol']
+
+    def test_gpt6_luna_cost_no_longer_unpriced(self):
+        # 2026-10-28 实测用量：2,563,942 input + 27,267 output ≈ $0.27（补价前记为 $0）
+        tokens = {'input': 2_563_942, 'output': 27_267, 'cache_read': 0, 'cache_write': 0}
+        cost, unpriced = estimate_cost({'openai.gpt-6-luna': tokens})
+        assert abs(cost - (2.563942 * 0.10 + 0.027267 * 0.50)) < 1e-9
+        assert unpriced == set()
+
     def test_kimi_k3_matches_all_inference_profiles(self):
         # Kimi K3：in-region、US/IN Geo CRIS、Global CRIS 三种 model id 形态都要命中
         assert match_pricing('moonshotai.kimi-k3') == PRICING['kimi-k3']
