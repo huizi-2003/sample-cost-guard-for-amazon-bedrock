@@ -166,6 +166,17 @@ tr:hover { background: #faf7f4; }
     <div class="summary-card"><div class="value" id="cost-tokens">-</div><div class="label">累计 Token</div></div>
   </div>
   <div id="cost-note" style="display:none; font-size:12px; color:#999; margin:-12px 0 12px;">* 估算值，cache write 按 5min 价格计算；in-region 调用实际费用约高 10%</div>
+  <!-- 按模型费用明细（数据来自 /api/today-cost 的 models 字段，与上方卡片同源） -->
+  <div id="cost-model-container" style="display:none; margin-bottom:20px;">
+    <h3>最近 24h 按模型费用明细</h3>
+    <table id="cost-model-table">
+      <thead><tr>
+        <th>模型</th><th class="num">预估费用</th><th class="num">占比</th>
+        <th class="num">Input</th><th class="num">Output</th><th class="num">Cache Read</th><th class="num">Cache Write</th><th class="num">Token 合计</th>
+      </tr></thead>
+      <tbody id="cost-model-body"></tbody>
+    </table>
+  </div>
   <div id="monitor-empty" style="display:none; text-align:center; padding:60px; color:#888;">
     暂无数据，最近 24 小时无调用
   </div>
@@ -943,10 +954,13 @@ async function loadTodayCost() {
     const trendEl = document.getElementById('cost-trend-container');
     const noteEl = document.getElementById('cost-note');
 
+    const modelTableEl = document.getElementById('cost-model-container');
+
     if (data.total_cost === 0 && data.timeline.length === 0) {
       cardsEl.style.display = 'none';
       trendEl.style.display = 'none';
       noteEl.style.display = 'none';
+      modelTableEl.style.display = 'none';
       return;
     }
 
@@ -969,6 +983,10 @@ async function loadTodayCost() {
     // 累计 Token（所有已定价模型）
     document.getElementById('cost-tokens').textContent = (data.total_tokens || 0).toLocaleString();
 
+    // 按模型费用明细表
+    renderCostModelTable(data.models || {}, data.total_cost || 0, data.unpriced_models || []);
+    modelTableEl.style.display = (modelEntries.length > 0 || (data.unpriced_models || []).length > 0) ? 'block' : 'none';
+
     // 趋势线
     if (data.timeline.length > 1) {
       trendEl.style.display = 'block';
@@ -978,6 +996,53 @@ async function loadTodayCost() {
     }
   } catch (e) {
     // 静默失败，不影响主图表
+  }
+}
+
+function renderCostModelTable(models, totalCost, unpricedModels) {
+  // 用 DOM API 而非 innerHTML 拼字符串：模型名来自 CloudWatch label，不做 HTML 解释
+  const body = document.getElementById('cost-model-body');
+  body.replaceChildren();
+
+  const addCell = (tr, text, cls, title) => {
+    const td = document.createElement('td');
+    td.textContent = text;
+    if (cls) td.className = cls;
+    if (title) td.title = title;
+    tr.appendChild(td);
+    return td;
+  };
+  const fmtTokens = (n) => (n || 0).toLocaleString();
+
+  const rows = Object.entries(models).sort((a, b) => b[1].cost - a[1].cost);
+  for (const [name, m] of rows) {
+    const tr = document.createElement('tr');
+    // 完整模型 ID 放 title，悬停可见；单元格显示缩短名
+    addCell(tr, shortenModelName(name), null, name);
+    addCell(tr, '$' + m.cost.toFixed(4), 'num cost');
+    addCell(tr, totalCost > 0 ? (m.cost / totalCost * 100).toFixed(1) + '%' : '-', 'num');
+    addCell(tr, fmtTokens(m.input), 'num');
+    addCell(tr, fmtTokens(m.output), 'num');
+    addCell(tr, fmtTokens(m.cache_read), 'num');
+    addCell(tr, fmtTokens(m.cache_write), 'num');
+    addCell(tr, fmtTokens(m.tokens), 'num');
+    body.appendChild(tr);
+  }
+
+  // 未定价模型：有 token 量但价目表匹配不到，费用未计入上方总额，必须明示
+  if (unpricedModels.length > 0) {
+    const tr = document.createElement('tr');
+    const td = addCell(tr, '⚠ 未定价模型（费用未计入）：' + unpricedModels.join(', ') + '，请在 common/pricing.py 补价');
+    td.colSpan = 8;
+    td.style.color = '#c4442a';
+    body.appendChild(tr);
+  }
+
+  if (rows.length === 0 && unpricedModels.length === 0) {
+    const tr = document.createElement('tr');
+    const td = addCell(tr, '暂无数据');
+    td.colSpan = 8;
+    body.appendChild(tr);
   }
 }
 
