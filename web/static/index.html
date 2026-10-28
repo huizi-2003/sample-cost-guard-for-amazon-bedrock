@@ -374,22 +374,6 @@ tr:hover { background: #faf7f4; }
 <script>
 const API = window.location.pathname.replace(/\/$/, '');
 
-// UTC 时间字符串 "MM/DD HH:MM" 转北京时间 (UTC+8)
-function utcToBJ(timeStr) {
-  // timeStr 格式: "07/24 01:05"
-  const parts = timeStr.match(/(\d{2})\/(\d{2}) (\d{2}):(\d{2})/);
-  if (!parts) return timeStr;
-  let month = parseInt(parts[1]), day = parseInt(parts[2]);
-  let hour = parseInt(parts[3]), min = parseInt(parts[4]);
-  hour += 8;
-  if (hour >= 24) { hour -= 24; day += 1; }
-  // 简单处理月末进位（不需要精确，显示用途）
-  const daysInMonth = [31,28,31,30,31,30,31,31,30,31,30,31];
-  if (day > daysInMonth[month - 1]) { day = 1; month += 1; }
-  if (month > 12) { month = 1; }
-  return String(month).padStart(2,'0') + '/' + String(day).padStart(2,'0') + ' ' + String(hour).padStart(2,'0') + ':' + String(min).padStart(2,'0');
-}
-
 const COLORS = [
   'rgba(192,120,48,0.75)', 'rgba(196,68,42,0.75)', 'rgba(45,134,89,0.75)',
   'rgba(181,101,29,0.75)', 'rgba(107,64,142,0.75)', 'rgba(58,135,173,0.75)',
