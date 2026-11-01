@@ -80,6 +80,19 @@ class TestMatchPricing:
         assert abs(cost - 18.0) < 1e-9
         assert unpriced == set()
 
+    def test_grok_4_7_matches_all_inference_profiles(self):
+        # Grok 4.7：base id、US Geo CRIS、Global CRIS（CloudWatch 实测形态）都要命中
+        assert match_pricing('xai.grok-4.7') == PRICING['grok-4.7']
+        assert match_pricing('us.xai.grok-4.7') == PRICING['grok-4.7']
+        assert match_pricing('global.xai.grok-4.7') == PRICING['grok-4.7']
+
+    def test_grok_4_7_cost_and_no_longer_unpriced(self):
+        # 1M input + 1M output = $2 + $6；此前匹配不到价格，会落进 unpriced
+        tokens = {'input': 1_000_000, 'output': 1_000_000, 'cache_read': 0, 'cache_write': 0}
+        cost, unpriced = estimate_cost({'global.xai.grok-4.7': tokens})
+        assert abs(cost - 8.0) < 1e-9
+        assert unpriced == set()
+
     def test_unknown_returns_none(self):
         # 未收录的 mantle 模型仍返回 None（费用按 0，计入 unpriced 提示）
         assert match_pricing('openai.gpt-6') is None

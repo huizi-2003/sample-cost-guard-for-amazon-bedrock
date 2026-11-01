@@ -75,6 +75,16 @@ PRICING = {
     # 实际只用到 input/output 两项。将来若上线 kimi-k3-1 等型号，必须排在本条之前，
     # 否则会被 'kimi-k3' 短 key 抢先命中。
     'kimi-k3': {'input': 3.0, 'output': 15.0, 'cache_read': 0.30, 'cache_write': 3.75},
+    # xAI Grok 4.7（2026-09-28 上线），base model id xai.grok-4.7，仅走 bedrock-runtime，
+    # 且只支持 US Geo CRIS (us.xai.grok-4.7) 与 Global CRIS (global.xai.grok-4.7)，
+    # 无 in-region。取 Global CRIS 价（Geo CRIS 为 ×1.1，按本表惯例忽略），来自 Bedrock
+    # 模型卡片；账单尚无条目可反算核对。本账户 CloudWatch AWS/Bedrock 已出现
+    # ModelId=global.xai.grok-4.7 的 Input/OutputTokenCount，无 cache 指标。
+    # 只支持 Implicit Prompt Caching、不支持 Explicit，卡片未列 cache write 价，
+    # 故 cache_write 取 0；cache_read 挂牌 0.50 保留备将来指标拆分。
+    # 524K 共享上下文内统一价，卡片未列长上下文分档。
+    # key 用 'grok-4.7' 而非 'grok'，避免将来加 grok-5 等型号时被短 key 抢先命中。
+    'grok-4.7': {'input': 2.0, 'output': 6.0, 'cache_read': 0.50, 'cache_write': 0},
 }
 
 

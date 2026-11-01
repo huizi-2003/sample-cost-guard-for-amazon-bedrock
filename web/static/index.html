@@ -1132,6 +1132,8 @@ function shortenModelName(name) {
   name = name.replace('moonshotai.kimi-k3-mantle-global', 'Kimi K3 (mantle-global)');
   name = name.replace('moonshotai.kimi-k3-mantle', 'Kimi K3 (mantle)');
   name = name.replace('moonshotai.kimi-k3', 'Kimi K3');
+  // Grok 4.7：CloudWatch 实测 ModelId 为 global.xai.grok-4.7（前缀已在上面剥掉）
+  name = name.replace('xai.grok-4.7', 'Grok 4.7');
   return name;
 }
 
