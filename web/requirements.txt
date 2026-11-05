@@ -1,3 +1,6 @@
-fastapi==0.115.0
+fastapi>=0.133,<1
+# 显式下限：starlette 1.3.1 修复了 0.38.x 上的 7 个 CVE（multipart / urlencoded DoS、
+# Host 头篡改 request.url 等）。fastapi 只要求 starlette>=0.46.0，不加这行可能装到旧版。
+starlette>=1.3.1
 mangum==0.19.0
 boto3>=1.35.0
