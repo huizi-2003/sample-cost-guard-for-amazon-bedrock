@@ -973,12 +973,11 @@ async def health():
 
 # ===== 版本信息 =====
 
-# 远端 release 查询的缓存有效期（秒）。Updater 每周检查一次，这个缓存只是
+# 远端 release 查询的缓存有效期（秒）。Updater 每天检查一次，这个缓存只是
 # 让页面在两次定时检查之间也能看到较新的信息，同时避免每次访问都打 GitHub。
 _VERSION_CACHE_TTL = 3600  # 1 小时
 
-# 自动升级的定时表达式是 cron(0 3 ? * MON *)，与 template.yaml 保持一致
-_CHECK_WEEKDAY = 0   # Monday
+# 自动升级的定时表达式是 cron(0 3 * * ? *)，与 template.yaml 保持一致
 _CHECK_HOUR_UTC = 3
 
 
@@ -999,11 +998,9 @@ def _build_info():
 def _next_check_time(now=None):
     """下一次自动检查的时间（UTC）。"""
     now = now or datetime.now(timezone.utc)
-    days = (_CHECK_WEEKDAY - now.weekday()) % 7
-    candidate = (now + timedelta(days=days)).replace(
-        hour=_CHECK_HOUR_UTC, minute=0, second=0, microsecond=0)
+    candidate = now.replace(hour=_CHECK_HOUR_UTC, minute=0, second=0, microsecond=0)
     if candidate <= now:
-        candidate += timedelta(days=7)
+        candidate += timedelta(days=1)
     return candidate
 
 

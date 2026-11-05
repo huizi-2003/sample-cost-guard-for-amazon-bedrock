@@ -227,7 +227,7 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
   - 每 5 分钟自动刷新
 - **配置管理**：监控总开关 + 三层告警阈值、通知渠道（Webhook）、日报推送策略、AI 账单总结、监控 Region 列表（只读展示）
 - **版本管理**：
-  - **自动更新**（默认开启）：每周自动检查 GitHub Release 并整栈升级，用户无需操作
+  - **自动更新**（默认开启）：每天自动检查 GitHub Release 并整栈升级，用户无需操作
   - 更新记录时间线：每次检查/更新的时间、结果、更新内容（来自 Release notes），可展开查看
   - 页面开关可随时关闭自动更新，也可点「立即更新」手动触发
   - 版本号显示 Release tag（如 `v26.09.28.1`），构建时由 CodeFetcher 固化进 `common/build_info.py`，无需手动维护
@@ -297,7 +297,7 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 │                                                              │
 │  EventBridge (5min) ──→ Lambda: monitor                      │
 │  EventBridge (daily) ─→ Lambda: reconciler                   │
-│  EventBridge (weekly) → Lambda: updater ──┐                  │
+│  EventBridge (daily) ─→ Lambda: updater ──┐                  │
 │                              │            │ CreateChangeSet  │
 │                              ▼            ▼                  │
 │                        DynamoDB Table   CloudFormation       │
@@ -320,7 +320,7 @@ AWS 账单默认 T+1 才出数据——今天的用量明天才能在 Cost Explo
 | 组件 | 技术 | 说明 |
 |------|------|------|
 | 后端计算 | Lambda Python 3.12 | monitor + reconciler + updater + web |
-| 定时触发 | EventBridge Rules | 5 分钟 / 每日 UTC 01:00 / 每周一 UTC 03:00 |
+| 定时触发 | EventBridge Rules | 5 分钟 / 每日 UTC 01:00 / 每日 UTC 03:00 |
 | 数据存储 | DynamoDB 单表 | 配置 + 阈值 + 对账记录 + 监控记录 + 告警状态 + 升级历史 |
 | Web 管理 | FastAPI + mangum + 原生 HTML/JS | API Gateway 代理到 Lambda |
 | 访问控制 | API Gateway Resource Policy | IP 白名单（AllowedCidrs 参数） |
@@ -421,7 +421,7 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
 部署后系统会自动：
 - 每 5 分钟监控 Bedrock 用量（超阈值推送告警）
 - 每天 UTC 01:00（北京时间 09:00）自动对账
-- 每周一 UTC 03:00（北京时间 11:00）检查并安装新版本（见[自动更新](#自动更新)）
+- 每天 UTC 03:00（北京时间 11:00）检查并安装新版本（见[自动更新](#自动更新)）
 
 ### 参数说明
 
@@ -447,7 +447,7 @@ aws cloudformation describe-stacks --stack-name bedrock-cost-guard \
 默认开启，无需任何操作：
 
 ```
-EventBridge（每周一 UTC 03:00 / 北京时间 11:00）
+EventBridge（每天 UTC 03:00 / 北京时间 11:00）
       ↓
 Updater Lambda 检查最新 Release
       ↓
@@ -471,7 +471,7 @@ Updater Lambda 检查最新 Release
 
 在 Web Console 的「版本管理」页可以：关闭自动更新、点「立即更新」、查看更新记录和每次更新的内容。
 
-**通知策略**：更新成功不发通知（避免每周打扰），失败或自动回退时通过已配置的 Webhook 告警。
+**通知策略**：更新成功不发通知（避免频繁打扰），失败或自动回退时通过已配置的 Webhook 告警。
 
 ### 安全设计
 

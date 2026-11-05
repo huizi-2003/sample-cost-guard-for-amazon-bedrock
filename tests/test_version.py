@@ -434,7 +434,7 @@ class TestAutoUpgradeStatus:
         assert au['enabled'] is True
         assert au['last_status'] == 'SUCCESS'
         assert au['in_progress'] is False
-        assert au['next_check_at']  # 下一个周一 03:00 UTC
+        assert au['next_check_at']  # 下一个 03:00 UTC
 
     @pytest.mark.anyio
     @patch('web.app.get_auto_upgrade_config')
@@ -459,29 +459,35 @@ class TestAutoUpgradeStatus:
 
 
 class TestNextCheckTime:
-    """_next_check_time：每周一 UTC 03:00。"""
+    """_next_check_time：每天 UTC 03:00。"""
 
-    def test_sunday_returns_next_monday(self):
+    def test_before_0300_returns_same_day(self):
         from web.app import _next_check_time
-        got = _next_check_time(datetime(2026, 8, 2, 10, 0, tzinfo=timezone.utc))
+        got = _next_check_time(datetime(2026, 8, 2, 1, 0, tzinfo=timezone.utc))
+        assert got == datetime(2026, 8, 2, 3, 0, tzinfo=timezone.utc)
+
+    def test_exactly_0300_returns_next_day(self):
+        from web.app import _next_check_time
+        got = _next_check_time(datetime(2026, 8, 2, 3, 0, tzinfo=timezone.utc))
         assert got == datetime(2026, 8, 3, 3, 0, tzinfo=timezone.utc)
 
-    def test_monday_before_0300_returns_same_day(self):
+    def test_after_0300_returns_next_day(self):
         from web.app import _next_check_time
-        got = _next_check_time(datetime(2026, 8, 3, 1, 0, tzinfo=timezone.utc))
+        got = _next_check_time(datetime(2026, 8, 2, 5, 0, tzinfo=timezone.utc))
         assert got == datetime(2026, 8, 3, 3, 0, tzinfo=timezone.utc)
 
-    def test_monday_after_0300_returns_next_week(self):
+    def test_month_end_rolls_over(self):
         from web.app import _next_check_time
-        got = _next_check_time(datetime(2026, 8, 3, 5, 0, tzinfo=timezone.utc))
-        assert got == datetime(2026, 8, 10, 3, 0, tzinfo=timezone.utc)
+        got = _next_check_time(datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc))
+        assert got == datetime(2026, 9, 1, 3, 0, tzinfo=timezone.utc)
 
-    def test_always_monday(self):
+    def test_always_within_24h_at_0300(self):
         from web.app import _next_check_time
         for day in range(1, 29):
-            got = _next_check_time(datetime(2026, 8, day, 12, 0, tzinfo=timezone.utc))
-            assert got.weekday() == 0
+            now = datetime(2026, 8, day, 12, 0, tzinfo=timezone.utc)
+            got = _next_check_time(now)
             assert got.hour == 3
+            assert timedelta(0) < got - now <= timedelta(days=1)
 
 
 class TestHealthEndpoint:

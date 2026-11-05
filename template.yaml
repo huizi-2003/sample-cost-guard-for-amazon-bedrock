@@ -1088,9 +1088,9 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub "${AWS::StackName}-updater-schedule"
-      Description: Weekly check for new GitHub Releases
-      # 每周一 UTC 03:00（北京时间 11:00）
-      ScheduleExpression: cron(0 3 ? * MON *)
+      Description: Daily check for new GitHub Releases
+      # 每天 UTC 03:00（北京时间 11:00）
+      ScheduleExpression: cron(0 3 * * ? *)
       State: ENABLED
       Targets:
         - Id: UpdaterLambda

@@ -250,18 +250,18 @@ def save_ai_summary_config(enabled: bool, model_id: str):
 AUTO_UPGRADE_SK = 'auto_upgrade'
 UPGRADE_HISTORY_PK = 'UPGRADE'
 
-# 升级记录保留 90 天（与 RECONCILE#* 一致），由 DDB TTL 自动清理。
+# 升级记录保留 14 天，由 DDB TTL 自动清理。
 #
-# 周检即使"无更新"也会记一条（见 updater.check_and_upgrade），所以这个 TTL
-# 同时决定了记录条数的稳态上限：90 天 ≈ 13 条周检记录，页面固定只取最近
-# 20 条，剩下的余量才够放真正的升级 / 失败记录。TTL 放到年级别时，周检记录
+# 每日检查即使"无更新"也会记一条（见 updater.check_and_upgrade），所以这个 TTL
+# 同时决定了记录条数的稳态上限：14 天 ≈ 14 条每日检查记录，页面固定只取最近
+# 20 条，剩下的余量才够放真正的升级 / 失败记录。TTL 再调大时，每日检查记录
 # 会把那 20 条窗口占满，真实记录虽然还在表里却翻不到了。
-UPGRADE_HISTORY_TTL_DAYS = 90
+UPGRADE_HISTORY_TTL_DAYS = 14
 
 # current_upgrade_id 这把"升级进行中"的锁多久后视为失效。
 #
 # 为什么必须有失效机制：Updater 被 Lambda 超时掐死时不会抛出可捕获的异常，
-# 它的顶层兜底清理跑不到；而 save_auto_upgrade_config 是合并语义，周检也不会
+# 它的顶层兜底清理跑不到；而 save_auto_upgrade_config 是合并语义，每日检查也不会
 # 清这个字段。没有失效判定，一次意外就让「立即升级」永久返回 409、前端永久
 # 显示"正在更新"，用户无法自愈。
 #

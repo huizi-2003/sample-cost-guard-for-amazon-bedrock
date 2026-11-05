@@ -8,7 +8,7 @@
     CloudFormation service role。
 
 升级流程：
-    EventBridge（每周一）或 Web「立即升级」
+    EventBridge（每天）或 Web「立即升级」
         ↓
     读 DDB 开关 → 关闭则只记录检查时间
         ↓
@@ -236,7 +236,7 @@ def get_current_version():
 def notify(message):
     """发送 webhook 通知。
 
-    按设计只在失败 / 回退 / 阻断时调用——升级成功不通知，避免每周一条
+    按设计只在失败 / 回退 / 阻断时调用——升级成功不通知，避免频繁
     无用打扰；但失败必须有人知道，否则用户会长期停在旧版本而毫无察觉。
     """
     try:
