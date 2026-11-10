@@ -15,10 +15,20 @@ PRICING = {
     # 为 ×1.1，按本表惯例忽略）。必须排在 'opus' 之前，否则会被短 key 抢先命中。
     'opus-5-5': {'input': 4,   'output': 20,  'cache_read': 0.2,  'cache_write': 5.0},
     'opus':    {'input': 5,   'output': 25,  'cache_read': 0.5,  'cache_write': 6.25},
+    # Fable 5.2（2026-11-09 上线）四项较 Fable 5.1 全线降 20%，cache_read 仍为 input 的
+    # 0.025×。Bedrock 只提供 US Geo CRIS / Global CRIS（global.anthropic.claude-fable-5-2），
+    # 取 Global CRIS 价（Bedrock 价目页 8 / 40 / 10 / 0.20，与 Anthropic 挂牌价一致）；
+    # 账单尚无条目可反算核对。必须排在 'fable-5-1' 与 'fable' 之前，否则会被短 key 抢先命中。
+    'fable-5-2': {'input': 8,   'output': 40,  'cache_read': 0.20, 'cache_write': 10.0},
     # Fable 5.1 与 Fable 5 仅 cache_read 不同（0.25 vs 1.0，Anthropic 挂牌价降 75%），
     # 其余 input/output/cache_write 一致。必须排在 'fable' 之前，否则会被短 key 抢先命中。
     'fable-5-1': {'input': 10,  'output': 50,  'cache_read': 0.25, 'cache_write': 12.5},
     'fable':   {'input': 10,  'output': 50,  'cache_read': 1.0,  'cache_write': 12.5},
+    # Sonnet 5.5：input/output/cache_write 为 Sonnet 4.x 的 2/3，cache_read 为 input 的
+    # 0.05×（Bedrock 价目页 2 / 10 / 2.50 / 0.10）。本账户 CloudWatch 已出现
+    # global.anthropic.claude-sonnet-5-5 流量，此前落到泛 'sonnet' 高估约 50%。
+    # 必须排在 'sonnet' 之前，否则会被短 key 抢先命中。
+    'sonnet-5-5': {'input': 2,   'output': 10,  'cache_read': 0.10, 'cache_write': 2.5},
     'sonnet':  {'input': 3,   'output': 15,  'cache_read': 0.3,  'cache_write': 3.75},
     # Haiku 5.5（2026-10-07 上线）四项全线降为 Haiku 4.5 的 1/10。取 Global CRIS 价
     # （Geo CRIS / in-region 为 ×1.1，按本表惯例忽略）。input/output 已从本账户

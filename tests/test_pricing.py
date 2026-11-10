@@ -22,6 +22,33 @@ class TestMatchPricing:
         assert match_pricing('global.anthropic.claude-fable-5-1') == PRICING['fable-5-1']
         assert match_pricing('claude-fable-5') == PRICING['fable']
 
+    def test_fable_5_2_gets_specific_price(self):
+        # 5.2 四项全线降 20%；必须优先于 'fable-5-1' 与泛 'fable' 命中，
+        # bedrock-runtime（带 global./us. 前缀）与裸 id 都要命中，且不影响 5.1 / 5
+        assert match_pricing('claude-fable-5-2') == PRICING['fable-5-2']
+        assert match_pricing('us.anthropic.claude-fable-5-2') == PRICING['fable-5-2']
+        assert match_pricing('global.anthropic.claude-fable-5-2') == PRICING['fable-5-2']
+        assert match_pricing('global.anthropic.claude-fable-5-1') == PRICING['fable-5-1']
+        assert match_pricing('claude-fable-5') == PRICING['fable']
+        assert PRICING['fable-5-2'] == {'input': 8, 'output': 40, 'cache_read': 0.20, 'cache_write': 10.0}
+
+    def test_fable_5_2_cost_is_80_percent_of_fable_5_1(self):
+        # 同样四项各 1M token：5.1 = 10+50+0.25+12.5 = $72.75，5.2 = 8+40+0.20+10 = $58.20
+        tokens = {'input': 1_000_000, 'output': 1_000_000, 'cache_read': 1_000_000, 'cache_write': 1_000_000}
+        cost_51, _ = estimate_cost({'global.anthropic.claude-fable-5-1': tokens})
+        cost_52, _ = estimate_cost({'global.anthropic.claude-fable-5-2': tokens})
+        assert abs(cost_51 - 72.75) < 1e-9
+        assert abs(cost_52 - 58.20) < 1e-9
+        assert abs(cost_52 / cost_51 - 0.8) < 1e-9
+
+    def test_sonnet_5_5_gets_specific_price(self):
+        # Sonnet 5.5 比 4.x 便宜 1/3、cache_read 为 input 的 0.05×；必须优先于泛 'sonnet'
+        # 命中（CloudWatch 实测形态 global.anthropic.claude-sonnet-5-5），且不影响 Sonnet 4.x
+        assert match_pricing('claude-sonnet-5-5') == PRICING['sonnet-5-5']
+        assert match_pricing('global.anthropic.claude-sonnet-5-5') == PRICING['sonnet-5-5']
+        assert match_pricing('claude-sonnet-4-5-20250929-v1:0') == PRICING['sonnet']
+        assert PRICING['sonnet-5-5'] == {'input': 2, 'output': 10, 'cache_read': 0.10, 'cache_write': 2.5}
+
     def test_haiku_5_5_gets_specific_price(self):
         # Haiku 5.5 四项全线降为 1/10，必须优先于泛 'haiku' 命中；bedrock-runtime（带
         # global./地域前缀）与 bedrock-mantle 两种 label 形态都要命中，且不影响 Haiku 4.5
